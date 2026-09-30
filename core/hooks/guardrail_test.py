@@ -275,6 +275,42 @@ def check_prepush():
         else:
             bad(f"prepush: manual check did NOT block (exit {p.returncode})")
 
+        # 2026-09-30: review.py used to read HEAD's diff of a commit's files, not
+        # the commit's own. Run it against both shapes that fooled it.
+        rv = REPO / ".ai-teammates" / "hooks" / "review.py"
+        review = lambda rng: subprocess.run([sys.executable, str(rv), "--range", rng], cwd=td,
+                                            capture_output=True, text=True, env=env)
+
+        def commit_files(msg, files):
+            for rel, text in files.items():
+                f = Path(td) / rel
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text(text)
+            sh("add", "-A"); sh("commit", "-qm", msg)
+
+        bearer = 'export const call = (t) => fetch("/x", { headers: { Authorization: "Bearer " + t } })\n'
+        sh("checkout", "-q", "-b", "feat/api", "development")
+        commit_files("A: add Authorization header", {"src/api.ts": bearer})
+        commit_files("B: unrelated tweak, same file", {"src/api.ts": bearer + "// unrelated tweak\n"})
+        r = review("development..feat/api")
+        if r.returncode == 1 and "A: add Authorization" in r.stdout:
+            ok("review: an Authorization header added in A is flagged after B touches the same file (executed)")
+        else:
+            bad(f"review: commit A lost once a later commit touched the same file (exit {r.returncode})")
+        # the doc AND a benign source file in ONE commit, then an unrelated one: the
+        # old fallback re-read the whole commit, doc included
+        sh("checkout", "-q", "-b", "feat/doc", "development")
+        commit_files("C: doc quotes Bearer + benign source",
+                     {"docs/notes.md": "Send Authorization: Bearer <token> in the header.\n",
+                      "src/plain.ts": "export const p = 1\n"})
+        commit_files("D: unrelated", {"src/other.ts": "export const q = 2\n"})
+        r = review("development..feat/doc")
+        if r.returncode == 0:
+            ok("review: Bearer text in an exempt doc does not flag the commit (executed)")
+        else:
+            bad(f"review: a doc quoting Bearer flagged an unrelated commit (exit {r.returncode})")
+        sh("checkout", "-q", "development")
+
 
 def check_hook():
     print("\n  PRE-PUSH HOOK — is git itself enforcing it for this repo?")

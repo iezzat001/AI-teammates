@@ -66,6 +66,39 @@ def sh(*args):
                           capture_output=True, text=True).stdout.strip()
 
 
+def _adds_sensitive_code(sha: str) -> bool:
+    """Does the diff of `sha` ALONE add a SENSITIVE_CODE line to a file that is
+    not exempt?
+
+    One `git show` per commit, read as a stream and attributed to files by its
+    own headers. The command line never carries a file list (ARG_MAX on a huge
+    commit) and a huge diff costs time, not memory. -U0: added lines only. A
+    merge shows its combined diff, one column per parent; only a line added
+    against EVERY parent is new in the merge itself - the rest came from a
+    branch whose own commits are judged in their own turn."""
+    cmd = [GIT, "show", "--format=", "-U0", "--no-color",
+           "--src-prefix=a/", "--dst-prefix=b/", sha]   # pinned: diff.noprefix must not shift the paths
+    with subprocess.Popen(cmd, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          text=True, errors="replace") as p:
+        scan, cols = False, 0    # scan: this file is not exempt; cols: >0 inside a hunk
+        for line in p.stdout:
+            line = line.rstrip("\n")
+            if line.startswith("diff "):            # next file: back in its header
+                scan, cols = False, 0
+            elif not cols and line.startswith("+++ "):
+                name = line[4:].rstrip("\t").strip('"')   # git tabs-terminates names with spaces
+                name = name[2:] if name.startswith("b/") else name
+                scan = name != "/dev/null" and not EXEMPT_PATH.search(name)
+            elif line.startswith("@@"):
+                cols = line.index(" ") - 1          # "@@ " = 1 column, "@@@ " = 2 (a merge)
+            elif cols and scan and line[:cols] == "+" * cols and SENSITIVE_CODE.search(line[cols:]):
+                return True
+        err = p.stderr.read()
+        if p.wait() != 0:                           # half a diff is not "nothing found"
+            raise RuntimeError(f"git show {sha[:7]} failed: {(err.strip().splitlines() or ['?'])[0][:160]}")
+    return False
+
+
 def load_reviews() -> list:
     if not REVIEWS.exists():
         return []
@@ -158,17 +191,19 @@ def main() -> int:
         files = [f for f in sh("show", "--name-only", "--format=", sha).splitlines()
                  if f and not EXEMPT_PATH.search(f)]
         hits = [f for f in files if SENSITIVE_PATH.search(f)]
-        if not hits and files:
-            # Path names are not the whole story - a plain-looking file can add
-            # an Authorization header. Look at the added lines too.
-            # Only the added lines, and only in files we did not exempt.
-            diff = sh("show", "--format=", "-U0", "--", *files) if files else ""
-            if not diff:
-                diff = sh("show", "--format=", "-U0", sha)
-            added = "\n".join(l for l in diff.splitlines()
-                               if l.startswith("+") and not l.startswith("+++"))
-            if SENSITIVE_CODE.search(added):
-                hits = ["(content)"]
+        # Path names are not the whole story - a plain-looking file can add an
+        # Authorization header. Look at what THIS commit adds, in files we did
+        # not exempt.
+        #
+        # FOUND 2026-09-30: this ran `git show -- <files>` with no sha, so it read
+        # HEAD's diff of those paths, not this commit's. `Authorization: Bearer`
+        # added in A read "none security-touching" as soon as any later commit
+        # touched the same file - a check pointed at a source that cannot see the
+        # thing (catalogue #1). When that came back empty it fell back to the WHOLE
+        # commit, exempt docs included, so a doc quoting "Authorization: Bearer"
+        # flagged an unrelated commit.
+        if not hits and files and _adds_sensitive_code(sha):
+            hits = ["(content)"]
         if hits:
             flagged.append((sha[:7], subj[:56], hits[:3]))
 
