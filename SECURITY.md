@@ -31,13 +31,18 @@ differently. The guardrails are built to catch that agent, and to make its mista
 They are **not a sandbox** and won't stop a determined or compromised agent:
 
 - **Hooks run on your machine with your permissions.** So do the agents.
-- **Acceptance commands run as you.** If a card's acceptance command executes a file the
-  teammate may edit (a test, a script, a `package.json` script), the teammate controls
-  what runs. Review a card's acceptance commands before you run it.
+- **Acceptance commands run as you.** `card.py check` refuses a card whose acceptance
+  command directly runs a file the teammate may edit (`sh scripts/check.sh`, `node x.js`),
+  or a `package.json`/`Makefile` script when the teammate may edit that file. It can't see
+  inside a test runner: `npm test` or `pytest` will run test files the teammate edited. Read
+  a card's acceptance commands before you run it.
 - **Git hooks are client-side.** Anyone with a shell can skip them. Use your git host's
   branch protection for anything that must hold.
 - **The command checks match command text.** They catch common spellings, not every
   possible one.
+- **The independent-review gate checks that an audit ran, not what it found.** A promotion
+  that touches auth or spend needs a finished read-only audit run newer than the change; the
+  verdict is yours to read.
 - **Teammates use your Claude account** and spend from the same limits as your own session.
 
 If you find a gap in any of the protections listed above, that is a vulnerability: please

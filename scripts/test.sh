@@ -15,8 +15,14 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/ai-teammates-test.XXXXXX")"
 cleanup() { [ -n "${KEEP:-}" ] && echo "kept: $WORK" || rm -rf "$WORK"; }
 trap cleanup EXIT
 
+REAL_HOME="$HOME"
 export HOME="$WORK/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 mkdir -p "$HOME" "$WORK/bin"
+# MemPalace's vector store keeps its embedding model (~80 MB) under ~/.cache/chroma. With a fresh
+# HOME every run downloaded it again, and a slow download timed the MemPalace checks out.
+if [ -d "$REAL_HOME/.cache/chroma" ]; then
+  mkdir -p "$HOME/.cache" && ln -s "$REAL_HOME/.cache/chroma" "$HOME/.cache/chroma"
+fi
 cat > "$WORK/bin/claude" <<'SH'
 #!/bin/sh
 case "$1" in

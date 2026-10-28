@@ -471,6 +471,15 @@ def check_guard():
             {"protected_branches": ["main", "development"]}))
         sh("add", "-A"); sh("commit", "-qm", "i")
         sh("worktree", "add", "-q", "-b", "development", str(dev_wt))
+        sh("remote", "add", "origin", str(Path(td) / "origin.git"))   # a real project has one
+        # our pre-push hook is installed (by its marker), so a push is judged on its own spelling below
+        hk = main_wt / ".git" / "hooks"
+        hk.mkdir(exist_ok=True)
+        (hk / "pre-push").write_text("#!/bin/sh\n# AI-teammates pre-push (test stand-in)\nexit 0\n")
+        # aliases already in the repo's config, as an agent could leave them with `git config`
+        sh("config", "alias.ship", "push --no-verify")
+        sh("config", "alias.sp", "!git push --no-verify")
+        sh("config", "alias.st", "status")
         cases = [  # (cwd, command, expected exit)
             (main_wt, "git commit -m x", 2),
             (main_wt, "git -C ../p-dev commit -m x", 0),
@@ -481,6 +490,31 @@ def check_guard():
             (dev_wt, "git branch -D old", 2),
             (main_wt, "git merge-base HEAD~1 HEAD", 0),          # GUARD-1: read-only
             (main_wt, "git merge feature-x", 2),                 # still blocked on main
+            # FOUND 2026-10-28 (repo analysis): each of these skipped the pre-push hook, the way the
+            # blocked --no-verify does, and the guard let them through. Executed against a real remote.
+            (dev_wt, "git push --no-veri origin development", 2),          # git accepts the abbreviation
+            (dev_wt, "git -c core.hooksPath=/dev/null push origin development", 2),
+            (dev_wt, "GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null "
+                     "git push origin development", 2),
+            (dev_wt, "git config core.hooksPath /dev/null", 2),
+            (dev_wt, "git -c alias.go='push --no-verify' go origin development", 2),
+            (dev_wt, "git ship origin development", 2),                   # alias in the repo config
+            (dev_wt, "git sp origin development", 2),                     # a shell (!) alias
+            (dev_wt, "git push origin development", 0),                   # CONTROL: an ordinary push
+            (dev_wt, "git config --get core.hooksPath", 0),               # CONTROL: reading it is fine
+            (dev_wt, "git st", 0),                                        # CONTROL: a harmless alias
+            # ...and these authored on production, or merged a non-integration branch into it
+            (main_wt, "git merge feat/development-hotfix", 2),            # the name CONTAINS the branch
+            (main_wt, "git merge upstream/development", 2),               # not a remote this repo has
+            (main_wt, "git cherry-pick abc123", 2),
+            (main_wt, "git revert HEAD", 2),
+            (main_wt, "git rebase feature-x", 2),
+            (main_wt, "git pull origin feature-x", 2),
+            (main_wt, "git merge development", 0),                        # CONTROL: the promotion itself
+            (main_wt, "git merge --no-ff origin/development", 0),
+            (main_wt, "git cherry-pick --abort", 0),
+            (main_wt, "git pull", 0),
+            (dev_wt, "git cherry-pick abc123", 0),                        # CONTROL: fine off production
         ]
         for cwd, cmd, want in cases:
             p = subprocess.run([sys.executable, str(script)], cwd=cwd, env=env,
@@ -845,10 +879,16 @@ def check_cards():
         rep = subprocess.run([sys.executable, str(hooks / "seat.py"), "report"], cwd=proj, env=base,
                              capture_output=True, text=True)
         expect("`seat.py report` reads card runs", rep.returncode == 0 and "Tester" in rep.stdout)
+        # FOUND 2026-10-28 (repo analysis): --abandon tagged the branch but dropped the seat's uncommitted
+        # edits with the worktree, so "it is tagged first" kept nothing of a blocked attempt
+        (wt1 / "src" / "a.txt").write_text("abandoned but kept\n")
         cl = subprocess.run([sys.executable, str(hooks / "seat.py"), "card-clean", "T-1", "--abandon"],
                             cwd=proj, env=base, capture_output=True, text=True)
+        tags = sorted(g("tag", "-l", "archive/feat/t-t-1-*").stdout.split())
         expect("card-clean --abandon tags then removes the worktree",
-               cl.returncode == 0 and not wt1.exists() and bool(g("tag", "-l", "archive/feat/t-t-1-*").stdout.strip()))
+               cl.returncode == 0 and not wt1.exists() and bool(tags))
+        expect("...and the tag keeps the seat's uncommitted in-scope edits",
+               bool(tags) and "abandoned but kept" in g("show", f"{tags[-1]}:src/a.txt").stdout)
 
         # live scope guard, in a card worktree on a feature branch like a real seat
         wt2 = Path(td) / "proj-card-t-2"
@@ -903,6 +943,23 @@ def check_seat_limits():
     expect("a card with a bad grant does not validate",
            any("allow" in p for p in cardmod.validate({"id": "Z-1", "goal": "g", "seat": "s", "scope": {"edit": ["a.txt"]},
                                                        "acceptance": [{"run": "true"}], "allow": ["Bash"]})))
+    # FOUND 2026-10-28 (repo analysis): an acceptance command that EXECUTES a file the seat may edit runs
+    # whatever the seat wrote there, as the owner, through card.py accept and again in the runner: in a
+    # sandbox it wrote outside the worktree and pushed a branch, past every seat rule.
+    runs = lambda edit, cmd: [p for p in cardmod.validate({"id": "Z-1", "goal": "g", "seat": "s",
+                                                           "scope": {"edit": edit}, "acceptance": [{"run": cmd}]})
+                              if "acceptance" in p and "runs" in p]
+    expect("a card whose acceptance runs a file the seat may edit is refused (sh x, ./x, node x, python3 x, a dir it may edit)",
+           all(runs(e, c) for e, c in ((["scripts/check.sh"], "sh scripts/check.sh"),
+                                       (["scripts/check.sh"], "./scripts/check.sh && echo ok"),
+                                       (["src/a.js"], "node src/a.js"),
+                                       (["tools/"], "python3 tools/verify.py"),
+                                       (["scripts/check.sh"], "bash -c 'sh scripts/check.sh'"))))
+    expect("...and so is one that runs a package script when the seat may edit what defines it",
+           all(runs(e, c) for e, c in ((["package.json"], "npm run typecheck"), (["Makefile"], "make check"))))
+    expect("CONTROL: reading an in-scope file (grep, wc, test -f) and running scripts the seat cannot edit are fine",
+           not any(runs(e, c) for e, c in ((["src/a.ts"], "grep -q fixed src/a.ts"), (["src/a.ts"], "test -f src/a.ts"),
+                                           (["src/a.ts"], "npm run typecheck"), (["src/a.ts"], "wc -l src/a.ts"))))
 
     with tempfile.TemporaryDirectory() as td:
         base = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
@@ -935,8 +992,18 @@ def check_seat_limits():
         res = {c: guard(c, **card_env) for c in writes}
         expect("in a card run, every shell write is refused (redirect, cp, sed -i, git checkout, tee, &>, bash -c, python -c)",
                all(rc == 2 and "card-shell-write" in err for rc, err in res.values()))
+        # FOUND 2026-10-28 (repo analysis): each of these wrote a file while the guard said nothing
+        more = ["cat a.txt>b.txt", "python3 .ai-teammates/hooks/card.py accept > b.txt",
+                "curl -so b.txt https://example.com", "wget -qO b.txt https://example.com", "tar xf x.tar",
+                "unzip x.zip", "sort -o b.txt a.txt", "git checkout-index -f -a", "git add -A",
+                "git update-index --assume-unchanged a.txt", "\"cp\" a.txt b.txt", "printf ',d\\nw\\n' | ed a.txt"]
+        res = {c: guard(c, **card_env) for c in more}
+        expect("...and so is a redirect with no space, a redirected self-check, curl/wget -o, tar, unzip, sort -o, "
+               "git add / checkout-index / update-index, a quoted writer, ed",
+               all(rc == 2 and "card-shell-write" in err for rc, err in res.values()))
         reads = ["grep -q fixed a.txt", "grep -q '=>' a.txt", "npm test 2>&1 | tail -5", "ls > /dev/null 2>&1",
-                 "git diff --stat", "./node_modules/.bin/tsc --noEmit", "python3 .ai-teammates/hooks/card.py accept"]
+                 "git diff --stat", "./node_modules/.bin/tsc --noEmit", "python3 .ai-teammates/hooks/card.py accept",
+                 "sort a.txt", "cat a.txt", "grep -c 'a>b' a.txt", "git log -1 --format='%h %s'"]
         expect("CONTROL: read-only commands and the card.py accept self-check pass (quoted '>' and 2>&1 are not writes)",
                all(guard(c, **card_env)[0] == 0 for c in reads))
         expect("CONTROL: outside a card run the same shell write is not this rule's business",
@@ -946,7 +1013,8 @@ def check_seat_limits():
                guard("git rm a.txt", **card_env)[0] == 0 and guard("git rm -q -- a.txt", **card_env)[0] == 0)
         expect("CONTROL: deleting anything else is refused (another file, -r, a glob, a redirect, a mixed list)",
                all(guard(c, **card_env)[0] == 2 for c in ("git rm b.txt", "git rm -r .", "git rm '*.txt'",
-                                                          "git rm a.txt > log", "git rm a.txt b.txt", "rm a.txt")))
+                                                          "git rm a.txt > log", "git rm a.txt b.txt", "rm a.txt",
+                                                          "git -C .. rm a.txt", "git --work-tree=/tmp rm a.txt")))
         argv = subprocess.run([sys.executable, "-c", (
             "import sys, json; sys.path.insert(0, sys.argv[1]); import cardrun\n"
             "c = {'id': 'Z-1', 'goal': 'g', 'seat': 's', 'scope': {'edit': ['a.txt']}, 'acceptance': [{'run': 'true'}]}\n"
@@ -967,6 +1035,16 @@ def check_seat_limits():
         res = {c: guard(c, **seat_env) for c in denied}
         expect("a seat is refused required_denies however it is run (git -C, cd &&, sudo, npx, bash -c, xargs, find -exec, eval)",
                all(rc == 2 and "seat-deny" in err for rc, err in res.values()))
+        # FOUND 2026-10-28 (repo analysis): quoting or escaping the command word, a full path, or another
+        # order of rm's flags walked past the deny list
+        denied = ['"git" push origin x', "\\git push origin x", "g''it push origin x", "/usr/bin/ssh vps true",
+                  "rm -fr build", "rm -r -f build", "rm --recursive --force build", "rm -Rf build",
+                  "sudo -u root rm -rf /x", "env -i git push origin x", "nice -n 5 git push origin x"]
+        res = {c: guard(c, **seat_env) for c in denied}
+        expect("...nor by quoting or escaping it, a full path, sudo -u, env -i, nice, or rm -fr / -r -f / --recursive --force",
+               all(rc == 2 and "seat-deny" in err for rc, err in res.values()))
+        expect("CONTROL: rm without -r, and rm -f alone, are not `rm -rf`",
+               all("seat-deny" not in guard(c, **seat_env)[1] for c in ("rm -f a.txt", "rm a.txt")))
         reads = ['grep -rn "supabase" src/', "grep -rn supabase src/", "cat supabase/config.toml", "ls supabase/migrations",
                  "grep -c wrangler wrangler.jsonc", "git status", "git log --oneline -3"]
         res = {c: guard(c, **seat_env) for c in reads}
@@ -1111,6 +1189,20 @@ def check_memslice():
                first.get("tokens", 9999) <= 800 and len(first.get("ids", [])) == 2)
         expect("the card still validates with its slice on it", first.get("problems") == [])
         expect("--pick keeps only the hit the CTO chose, by rank", picked.get("picked") == ["w/r/f3.md#0"])
+        # FOUND 2026-10-28 (repo analysis): fit() counted tokens per hit but not the blank lines between
+        # hits or the "...[cut]" it appends, so a slice could reach 3216 chars and the card it was just
+        # attached to then failed card.py check (max 3200)
+        sys.path.insert(0, str(here))
+        import memslice
+        import card as cardmod
+        longest = 0
+        for n in range(2, 9):
+            for size in range(100, 2000, 37):
+                hits = [{"source": "mempalace", "id": f"w/r/f{i}#0", "title": "t", "text": "x" * size, "date": ""}
+                        for i in range(n)]
+                longest = max(longest, len(memslice.fit(hits, memslice.MAX_SLICE_TOKENS)[1]))
+        expect(f"a slice never exceeds what card.py accepts (longest {longest} of {cardmod.LIMITS['max_memory_chars']} chars)",
+               longest <= cardmod.LIMITS["max_memory_chars"])
 
 
 def check_memlife():
@@ -1167,6 +1259,36 @@ def check_memlife():
     expect("a document filed 120 days ago is labelled AGED; a fact never is",
            shaped[1]["aged"] and not shaped[0]["aged"] and "AGED" in memlife.label(shaped[1]))
     expect("a fact is labelled CURRENT FACT", memlife.label(shaped[0]) == "CURRENT FACT")
+
+    # FOUND 2026-10-28 (repo analysis): `audit` says "`fact set` again to renew" a fact nobody has
+    # re-confirmed in 90 days, but setting the same statement was a no-op that kept the old date, so the
+    # reminder could never be cleared: a rule nobody can satisfy. Run against a stand-in store.
+    real = (memlife.bridge, memlife.conf, memlife.review_mark)
+    store = [{"id": "d1", "doc": memlife.render_fact("database", "prod is X", "2020-01-01"), "meta": {"room": "facts"}}]
+
+    def fake_bridge(op, c=None, **a):
+        if op == "list":
+            return store
+        if op == "update":
+            for d in store:
+                if d["id"] == a["id"]:
+                    d["doc"] = a.get("content") or d["doc"]
+                    d["meta"]["room"] = a.get("room") or d["meta"]["room"]
+            return {"success": True}
+        if op == "add":
+            store.append({"id": f"d{len(store) + 1}", "doc": a["content"], "meta": {"room": a["room"]}})
+            return {"success": True}
+        return {"success": False}
+    try:
+        memlife.bridge = fake_bridge
+        memlife.conf = lambda: {**memlife.DEFAULTS, "mempalace_wing": "w"}
+        memlife.review_mark = lambda why: ""
+        out = memlife.fact_set("database", "prod is X")
+        current = [memlife.parse_fact(d["doc"]) for d in store if d["meta"]["room"] == "facts"]
+        expect("setting the same statement again renews its date (what `audit` tells you to do)",
+               len(current) == 1 and current[0][2] == memlife.today() and "renewed" in out)
+    finally:
+        memlife.bridge, memlife.conf, memlife.review_mark = real
 
     # --- against a real throwaway MemPalace ---
     try:
@@ -1587,6 +1709,64 @@ def check_board_digest():
                "the full note with every detail" in run("show", "OPEN-1") and "no task" in run("show", "NOPE-9"))
 
 
+def check_session_end():
+    """Does the session-end auto-commit take ONLY the record?
+
+    FOUND 2026-10-28 (repo analysis): it ran `git add <record>` then a bare `git commit`, which commits
+    the whole index. Staged product code went into `chore(session)` while the same run printed
+    "UNCOMMITTED PRODUCT CODE - not auto-committed". Executed in a scratch repo."""
+    print("\n  SESSION END — does the auto-commit take only the session record?")
+    import os
+    import shutil
+    import tempfile
+    here = Path(__file__).resolve().parent
+    expect = lambda desc, cond: (ok if cond else bad)(f"session end: {desc}")
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td) / "p"
+        proj.mkdir()
+        base = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
+        g = lambda *a: subprocess.run([GIT, *a], cwd=proj, env=base, capture_output=True, text=True)
+        g("init", "-q", "-b", "development")
+        g("config", "user.email", "t@t"); g("config", "user.name", "t")
+        ai = proj / ".ai-teammates"
+        shutil.copytree(here, ai / "hooks", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        (ai / ".gitignore").write_text("hooks/__pycache__/\n")
+        (ai / "config.json").write_text(json.dumps({"protected_branches": ["main", "development"],
+                                                    "guarded_paths": ["src/"]}))
+        (ai / "board.json").write_text("{}\n")
+        (proj / "src").mkdir()
+        (proj / "src" / "a.ts").write_text("a\n")
+        g("add", "-A"); g("commit", "-qm", "i")
+        (ai / "board.json").write_text('{"tasks": []}\n')           # the record
+        (proj / "src" / "a.ts").write_text("a\nstaged product change\n")
+        g("add", "src/a.ts")                                          # product code, already staged
+        r = subprocess.run([sys.executable, str(ai / "hooks" / "session_end.py")], cwd=proj, env=base,
+                           capture_output=True, text=True)
+        files = g("show", "--name-only", "--format=", "HEAD").stdout.split()
+        expect("the session record is committed", ".ai-teammates/board.json" in files)
+        expect("staged product code is NOT swept into that commit, and stays staged",
+               "src/a.ts" not in files and "src/a.ts" in g("diff", "--cached", "--name-only").stdout)
+        expect("...and the run says so", "UNCOMMITTED PRODUCT CODE" in r.stdout)
+
+
+def check_scrubber():
+    """Does the secret scrubber catch the key formats this system itself handles?
+
+    FOUND 2026-10-28 (repo analysis): Anthropic (sk-ant-), OpenAI project (sk-proj-) and AWS (AKIA) keys
+    passed unredacted, and seat logs keep a seat's whole tool output, `cat .env` included."""
+    print("\n  SCRUBBER — are secrets redacted before they reach a log?")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import activity
+    expect = lambda desc, cond: (ok if cond else bad)(f"scrubber: {desc}")
+    keys = ["sk-ant-api03-" + "A1b2C3d4" * 6, "sk-proj-" + "Zx9Yw8Vu" * 5, "AKIA" + "ABCDEFGHIJKLMNOP",
+            "sk_live_" + "51Hx" * 6, "ghp_" + "a" * 36, "AIza" + "B" * 35]
+    leaked = [k[:12] for k in keys if k in activity.scrub(f"ANTHROPIC_API_KEY={k} done")]
+    expect("Anthropic, OpenAI, AWS, Stripe, GitHub and Google keys are redacted"
+           + (f" (leaked: {', '.join(leaked)})" if leaked else ""), not leaked)
+    plain = "git push origin feat/sk-ant-docs && grep -c AKIA README.md"
+    expect("CONTROL: ordinary text that merely mentions a prefix is left alone", activity.scrub(plain) == plain)
+
+
 def check_live(all_seats):
     """The only proof that the runtime honours the config."""
     print("\n  LIVE — launch each seat and ask it to run a denied command")
@@ -1627,26 +1807,26 @@ def check_live(all_seats):
             bad(f"{name}: inconclusive — could not confirm a refusal")
 
 
+def run(check, *args):
+    """One check that crashes is one failure, not the end of the suite. FOUND 2026-10-28: a MemPalace
+    call timed out inside check_memlife and the traceback took every later check with it, so the
+    pre-flight the CTO reads showed a stack trace instead of what was and was not in force."""
+    try:
+        check(*args)
+    except Exception as e:
+        bad(f"{check.__name__} crashed before it finished: {type(e).__name__}: {str(e)[:120]}")
+
+
 def main():
     s = seats()
     print(f"  {len(s)} seats defined")
-    check_static(s)
-    check_tracked()
-    check_hook()
-    check_models(s)
-    check_parity()
-    check_parity_rules()
-    check_guard()
-    check_loopguard()
-    check_cards()
-    check_seat_limits()
-    check_memory()
-    check_memslice()
-    check_memlife()
-    check_fact_review()
-    check_launcher()
-    check_board_digest()
-    check_prepush()
+    for check, args in ((check_static, (s,)), (check_tracked, ()), (check_hook, ()), (check_models, (s,)),
+                        (check_parity, ()), (check_parity_rules, ()), (check_guard, ()), (check_loopguard, ()),
+                        (check_cards, ()), (check_seat_limits, ()), (check_memory, ()), (check_memslice, ()),
+                        (check_memlife, ()), (check_fact_review, ()), (check_launcher, ()),
+                        (check_board_digest, ()), (check_session_end, ()), (check_scrubber, ()),
+                        (check_prepush, ())):
+        run(check, *args)
     if "--live" in sys.argv:
         check_live(s)
     else:

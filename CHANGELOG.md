@@ -6,6 +6,35 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+Gaps found by an analysis of the guardrails, each now executed by the test suite and seen to fail
+without its fix:
+
+- The pre-push hook could be skipped past the guard with `git -c core.hooksPath=...`,
+  `GIT_CONFIG_*`, `git config core.hooksPath`, the abbreviation `--no-veri`, or a git alias that
+  runs `push --no-verify`. All are refused now.
+- On the production checkout, `git merge feat/development-x` passed as a promotion (a substring
+  test), and `cherry-pick`, `revert`, `rebase` and `pull <other branch>` were not checked.
+- A seat's deny list missed `"git" push`, `\git push`, `/usr/bin/ssh`, `sudo -u root ...`,
+  `nice`/`timeout` wrappers, `$(...)`, and `rm -fr` / `rm -r -f` / `rm --recursive --force`.
+- In a card run, `cat a>b`, a redirected self-check, `curl -o`, `tar`, `unzip`, `sort -o`, editors,
+  `git add` and git's plumbing writers changed files unnoticed; `git -C .. rm` deleted another
+  checkout's file as the card's.
+- `card.py check` refuses a card whose acceptance command runs a file the seat may edit.
+- `session_end.py` committed everything staged, product code included, as the session record.
+- The secret scrubber missed Anthropic, OpenAI project, AWS, fine-grained GitHub and new
+  Supabase keys.
+
+### Fixed
+
+- `memlife.py fact set` with an unchanged statement renews its date, so `audit`'s 90-day
+  re-confirm can be cleared.
+- A memory slice could exceed what `card.py check` accepts (3216 of 3200 characters).
+- `card-clean --abandon` kept the seat's uncommitted edits off the archive tag it promised.
+- The test suite reports a crashing check as one failure and runs the rest, and
+  `scripts/test.sh` reuses MemPalace's embedding model instead of downloading it every run.
+
 ## [0.1.0] - 2026-10-28
 
 First public release.

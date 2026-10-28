@@ -421,9 +421,10 @@ def run(agents: dict, cid: str, seat_name: str = "") -> int:
 def clean(cid: str, abandon: bool) -> int:
     agents = seat.load_agents()
     try:
-        spec = agents.get(cardmod.load(cid)["seat"]) or {}
+        card = cardmod.load(cid)
+        spec = agents.get(card["seat"]) or {}
     except Exception:
-        spec = {}
+        card, spec = {}, {}
     wt, br = card_worktree(cid), card_branch(spec, cid)
     if git("rev-parse", "--verify", "--quiet", br).returncode != 0 and not wt.exists():
         print(f"  nothing to clean for {cid}")
@@ -432,7 +433,9 @@ def clean(cid: str, abandon: bool) -> int:
     if not merged and not abandon:
         print(f"  {br} is NOT merged into {BASE}. Merge it, or discard with --abandon (it is tagged first).")
         return 1
-    tag = archive(wt, br) if not merged else ""
+    # the seat's uncommitted in-scope work goes onto the tag too, as on a re-run. FOUND 2026-10-28 (repo
+    # analysis): without the scope it was dropped with the worktree, and "tagged first" kept nothing of it
+    tag = archive(wt, br, cardmod.edit_scope(card) if card else None) if not merged else ""
     if merged:
         git("worktree", "remove", "--force", str(wt))
         git("worktree", "prune")

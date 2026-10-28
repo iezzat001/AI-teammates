@@ -338,8 +338,16 @@ def fact_set(topic: str, statement: str, dry: bool = False) -> str:
     cur = [d for d in _drawers(c) if d["meta"].get("room") == FACT_ROOM and d["doc"].startswith("FACT | ")
            and parse_fact(d["doc"])[0].lower() == topic.strip().lower()]
     for d in cur:
-        if parse_fact(d["doc"])[1] == statement.strip():
-            return f"  already current: {topic}"
+        _, said, since = parse_fact(d["doc"])
+        if said == statement.strip():
+            # Setting it again re-confirms it: the date moves, so `audit` stops asking. FOUND 2026-10-28
+            # (repo analysis): this returned without writing, and the 90-day reminder could never clear.
+            if since == today():
+                return f"  already current: {topic}"
+            if not dry:
+                _must(bridge("update", c, id=d["id"], content=render_fact(topic, said, today())), "renewing the fact")
+                review_mark(f"fact renewed: {topic.strip()}")
+            return f"  already current: {topic}; {'would renew' if dry else 'renewed'} (since {today()}, was {since})"
     for d in cur:
         _retire_drawer(d, FACT_ROOM, f"replaced on {today()} by a newer statement for '{topic}'", dry, c)
     if not dry:

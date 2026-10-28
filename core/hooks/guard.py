@@ -22,6 +22,7 @@ Overrides - both logged to .ai-teammates/events.jsonl:
 import json
 import os
 import re
+import shlex
 import sys as _sys
 _sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parent))
 import _config
@@ -131,33 +132,89 @@ def _unquote(cmd):
     return re.sub(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", lambda m: " " * len(m.group(0)), cmd)
 
 
-LEADERS = {"sudo", "command", "builtin", "exec", "nohup", "time", "env"}
+# Wrappers that run the command after them. FOUND 2026-10-28 (repo analysis): `sudo -u root rm -rf`
+# and `nice -n 5 git push` read as the commands `root` and `5`.
+LEADERS = {"sudo", "command", "builtin", "exec", "nohup", "time", "env", "nice", "timeout", "stdbuf", "caffeinate"}
+LEADER_VALUE_OPTS = {"sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T"},
+                     "env": {"-u", "-C", "-S", "-P"}, "nice": {"-n"}, "stdbuf": {"-i", "-o", "-e"}}
+GIT_VALUE_OPTS = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env")
+_FD = re.compile(r"\d*[<>]&\d+|&>>?")
+_SEP = re.compile(r"\|\||&&|[;|&\n]")
+
+
+def _words(text):
+    """The words the shell would see: quotes and backslashes removed, so `"git"`, `\\git` and `g''it`
+    are all `git`. FOUND 2026-10-28 (repo analysis): each of those walked past the deny list."""
+    try:
+        return shlex.split(text, posix=True)
+    except ValueError:                              # an unclosed quote: still read the words
+        return text.split()
+
+
+def _strip_leaders(w):
+    while w:
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]):
+            w.pop(0)
+            continue
+        lead = os.path.basename(w[0])
+        if lead not in LEADERS:
+            break
+        w.pop(0)
+        takes = LEADER_VALUE_OPTS.get(lead, set())
+        while w and w[0].startswith("-"):
+            if w.pop(0) in takes and w:
+                w.pop(0)
+        if lead == "timeout" and w:
+            w.pop(0)                                # its duration
+    return w
+
+
+def _parts(cmd):
+    """Each simple command in a line (split at ; && || | & and newlines) as (blank, argv, raw):
+
+    blank  its text with quoted strings blanked and fd duplications (2>&1) removed: for SYNTAX,
+           so a '>' or ';' inside quotes is not a redirect or a separator
+    argv   its words dequoted, leading VAR=value and wrappers (sudo, env, ...) dropped, the command
+           word as a basename (/usr/bin/ssh is ssh), git's global options dropped: for WHICH
+           command runs (`git -C x push` is `git push`)
+    raw    its dequoted words before anything was dropped"""
+    blank, raw = _unquote(cmd), cmd
+    # fd duplications and &> are not separators: neutralised at the same offsets in both strings
+    for m in reversed(list(_FD.finditer(blank))):
+        rep = " " * len(m.group(0)) if "&>" not in m.group(0) else " " + m.group(0)[1:]
+        blank = blank[:m.start()] + rep + blank[m.end():]
+        raw = raw[:m.start()] + rep + raw[m.end():]
+    out, pos = [], 0
+    for m in list(_SEP.finditer(blank)) + [None]:
+        end = m.start() if m else len(blank)
+        b, rw = blank[pos:end], _words(raw[pos:end])
+        pos = m.end() if m else end
+        w = _strip_leaders(list(rw))
+        if w:
+            w[0] = os.path.basename(w[0])
+            if w[0] == "git":
+                i = 1
+                while i < len(w) and w[i].startswith("-"):
+                    i += 2 if w[i] in GIT_VALUE_OPTS else 1
+                w = ["git"] + w[i:]
+        out.append((b, w, rw))
+    return out
 
 
 def _segments(cmd):
-    """Each simple command in a line (split at ; && || | & and newlines), quoted text blanked,
-    fd duplications (2>&1) removed, leading VAR=value and wrappers like sudo/env dropped."""
-    u = re.sub(r"\d*[<>]&\d+|&>>?", lambda m: " " if "&>" not in m.group(0) else " > ", _unquote(cmd))
-    out = []
-    for seg in re.split(r"\|\||&&|[;|&\n]", u):
-        words = seg.split()
-        while words and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]) or words[0] in LEADERS):
-            words.pop(0)
-        if words and os.path.basename(words[0]) == "git":
-            # `git -C x push` is `git push`: global options before the subcommand are how a
-            # pattern on "git push" gets walked past (the -f and refspec bypasses had the same shape)
-            i = 1
-            while i < len(words) and words[i].startswith("-"):
-                i += 2 if words[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path") else 1
-            words = ["git"] + words[i:]
-        if words:
-            out.append(" ".join(words))
-    return out
+    """Each simple command as one normalised string (see _parts)."""
+    return [" ".join(w) for _, w, _ in _parts(cmd) if w]
+
+
+def _substitutions(cmd):
+    """What $(...) and backticks would run. Single-quoted text does not expand; double-quoted does."""
+    text = re.sub(r"'[^']*'", lambda m: " " * len(m.group(0)), cmd)
+    return [a or b for a, b in re.findall(r"\$\(([^()]*)\)|`([^`]*)`", text)]
 
 
 def _commands(cmd, depth=0):
     """Every command this line would RUN: each simple command, plus what a shell (-c), eval,
-    xargs, npx or find -exec is told to run. Arguments are not commands.
+    xargs, npx, find -exec or a $(...) substitution is told to run. Arguments are not commands.
 
     FOUND 2026-10-04 by the ContentOS CTO: the first version tried every word as a possible
     command start, with quoted text read as code. With `supabase*` in ContentOS's denies,
@@ -170,7 +227,7 @@ def _commands(cmd, depth=0):
     for seg in _segments(cmd):
         out.append(seg)
         w = seg.split()
-        v = os.path.basename(w[0])
+        v = w[0]
         if v in ("xargs", "npx", "bunx", "eval"):
             i = 1
             while i < len(w) and w[i].startswith("-"):
@@ -186,13 +243,21 @@ def _commands(cmd, depth=0):
             out += _commands(m.group(2), depth + 1)
         for m in re.finditer(r"""(?:^|[\s;&|(])eval\s+(['"])(.*?)\1""", cmd):
             out += _commands(m.group(2), depth + 1)
+        for sub in _substitutions(cmd):
+            out += _commands(sub, depth + 1)
     return out
 
 
+# FOUND 2026-10-28 (repo analysis): curl -o, tar, unzip, sort -o, an editor, ed, and git's index and
+# plumbing writers all changed files while the guard said nothing.
 SHELL_WRITERS = {"mv", "cp", "rm", "ln", "dd", "tee", "truncate", "touch", "chmod", "chown", "install",
-                 "rsync", "mkdir", "rmdir", "unlink", "patch"}
+                 "rsync", "mkdir", "rmdir", "unlink", "patch", "curl", "wget", "tar", "unzip", "zip", "gzip",
+                 "gunzip", "bzip2", "bunzip2", "xz", "unxz", "ditto", "cpio", "split", "csplit", "ed", "ex",
+                 "vi", "vim", "nvim", "nano", "emacs", "pico", "shred", "mkfifo", "mknod", "scp", "sftp"}
 GIT_WRITES = {"checkout", "restore", "reset", "apply", "am", "stash", "clean", "rm", "mv", "commit", "merge",
-              "rebase", "cherry-pick", "revert", "push", "pull", "switch", "branch", "tag", "worktree", "config"}
+              "rebase", "cherry-pick", "revert", "push", "pull", "switch", "branch", "tag", "worktree", "config",
+              "add", "update-index", "update-ref", "checkout-index", "read-tree", "symbolic-ref", "notes", "gc",
+              "prune", "replace", "filter-branch", "fast-import", "init", "clone", "submodule", "sparse-checkout"}
 
 
 # A shell or interpreter runs whatever its argument says, and that argument is quoted text this
@@ -202,35 +267,51 @@ OPAQUE = {"sh", "bash", "zsh", "fish", "dash", "ksh", "eval", "exec", "xargs", "
 SELF_CHECK = "python3 .ai-teammates/hooks/card.py accept"     # the one interpreter call a card seat is given
 
 
-def shell_write(cmd):
-    """Why this command line would change files, or '' if it would not."""
-    for seg in _segments(cmd):
-        if seg == SELF_CHECK or seg.startswith(SELF_CHECK + " "):
-            continue
-        for m in re.finditer(r"(?:^|\s|\d)>>?\|?\s*(\S*)", seg):
-            if m.group(1) != "/dev/null":
-                return "it redirects output to %s" % (m.group(1) or "a file")
-        w = seg.split()
-        verb = os.path.basename(w[0])
-        if verb in SHELL_WRITERS:
-            return "it runs %s" % verb
-        if verb in OPAQUE:
-            return "it runs %s, which can change anything its argument says" % verb
-        if verb in ("sed", "perl", "ruby") and any(x.startswith("-i") or x in ("-pi", "-pie") for x in w[1:]):
-            return "it edits in place with %s -i" % verb
-        if verb == "git" and len(w) > 1 and w[1] in GIT_WRITES:
-            return "it runs git %s" % w[1]
+def _write_reason(blank, w):
+    """Why one simple command would change files, or ''."""
+    # Any unquoted '>' that is not 2>/dev/null writes a file. FOUND 2026-10-28: the pattern wanted a
+    # space before it, so `cat a>b` passed, and the self-check was exempted before this was looked at.
+    for m in re.finditer(r">>?\|?\s*(\S*)", blank):
+        if m.group(1) != "/dev/null":
+            return "it redirects output to %s" % (m.group(1) or "a file")
+    if not w:
+        return ""
+    seg = " ".join(w)
+    if seg == SELF_CHECK or seg.startswith(SELF_CHECK + " "):
+        return ""
+    verb = w[0]
+    if verb in SHELL_WRITERS:
+        return "it runs %s" % verb
+    if verb in OPAQUE:
+        return "it runs %s, which can change anything its argument says" % verb
+    if verb in ("sed", "perl", "ruby") and any(x.startswith("-i") or x in ("-pi", "-pie") for x in w[1:]):
+        return "it edits in place with %s -i" % verb
+    if verb == "sort" and any(x.startswith("-o") or x.startswith("--output") for x in w[1:]):
+        return "it writes a file with sort -o"
+    if verb == "git" and len(w) > 1 and w[1] in GIT_WRITES:
+        return "it runs git %s" % w[1]
     return ""
 
 
-def _scoped_delete(seg, card, cardmod):
+def shell_write(cmd, parts=None):
+    """Why this command line would change files, or '' if it would not."""
+    if _substitutions(cmd):
+        return "it runs a command substitution ($(...) or backticks), which this check cannot read"
+    for blank, w, _ in (parts if parts is not None else _parts(cmd)):
+        why = _write_reason(blank, w)
+        if why:
+            return why
+    return ""
+
+
+def _scoped_delete(blank, w, raw, card, cardmod):
     """True for `git rm [-q] [--] <files>` where every file is one this card may change:
-    no recursion, no globs, no redirect, nothing outside the card."""
-    w = seg.split()
-    if len(w) < 3 or os.path.basename(w[0]) != "git" or w[1] != "rm" or ">" in seg:
+    no recursion, no globs, no redirect, no -C or --work-tree (FOUND 2026-10-28: `git -C .. rm a.txt`
+    deleted another checkout's a.txt and passed as this card's), nothing outside the card."""
+    if ">" in blank or len(raw) < 3 or os.path.basename(raw[0]) != "git" or raw[1] != "rm":
         return False
     paths = []
-    for x in w[2:]:
+    for x in raw[2:]:
         if x in ("-q", "--quiet", "--"):
             continue
         if x.startswith("-") or any(ch in x for ch in "*?[]{}~$`"):
@@ -251,17 +332,34 @@ def check_card_shell(tool, ti):
     # Deleting a file IS a change to it, and no edit tool can do it, so a seat could not finish
     # a card that removes a file (DOC-4, 2026-10-04: the CTO did the work itself for that reason).
     # `git rm` of files the card names is allowed; anything else that writes is refused below.
+    parts = _parts(cmd)
     try:
         import card as cardmod
         c = json.loads(Path(cp).read_text(encoding="utf-8"))
-        rest = [seg for seg in _segments(cmd) if not _scoped_delete(seg, c, cardmod)]
+        parts = [p for p in parts if not _scoped_delete(*p, c, cardmod)]
     except Exception:
-        rest = _segments(cmd)                       # an unreadable card deletes nothing
-    why = shell_write(" ; ".join(rest)) if rest else ""
+        pass                                        # an unreadable card deletes nothing
+    why = shell_write(cmd, parts)
     if why:
         block("card-shell-write", "This command would change files outside the scope check: %s." % why,
               "Make the change with Edit or Write on a file the card names. Read-only commands "
               "(grep, cat, ls, git diff, the acceptance checks) are fine.")
+
+
+def _canon_rm(c):
+    """`rm -fr`, `rm -r -f`, `rm --recursive --force` and `rm -Rf` are all `rm -rf`."""
+    w = c.split()
+    if not w or w[0] != "rm":
+        return c
+    flags, rest = set(), []
+    for x in w[1:]:
+        if x.startswith("--"):
+            flags.add({"--recursive": "r", "--force": "f"}.get(x, ""))
+        elif x.startswith("-") and len(x) > 1:
+            flags |= set(x[1:].replace("R", "r"))
+        else:
+            rest.append(x)
+    return "rm -rf " + " ".join(rest) if {"r", "f"} <= flags else c
 
 
 def check_seat_denies(tool, ti):
@@ -274,7 +372,7 @@ def check_seat_denies(tool, ti):
     import fnmatch
     pats = _config.required_denies()
     for c in _commands(str(ti.get("command") or "")):
-        hit = next((p for p in pats if fnmatch.fnmatchcase(c, p)), None)
+        hit = next((p for p in pats if fnmatch.fnmatchcase(c, p) or fnmatch.fnmatchcase(_canon_rm(c), p)), None)
         if hit:
             block("seat-deny", "A seat never runs '%s' (config.json required_denies)." % hit,
                   "Stop and say what you needed it for: BLOCKED: seat-deny | <why>. The CTO or the "
@@ -363,6 +461,61 @@ def check_frontend_edit(tool, ti):
 
 # `git push`, also as `git -C dir push` / `git -c k=v push`.
 _PUSH = r"\bgit\b(?:\s+-[Cc]\s+\S+)*\s+push\b"
+# git's own commands: an alias of the same name is ignored by git, so these are never looked up
+GIT_BUILTINS = {"add", "am", "apply", "archive", "bisect", "blame", "branch", "cat-file", "checkout",
+                "cherry-pick", "clean", "clone", "commit", "config", "describe", "diff", "fetch",
+                "for-each-ref", "format-patch", "gc", "grep", "help", "init", "log", "ls-files", "ls-remote",
+                "merge", "merge-base", "mv", "notes", "pull", "push", "rebase", "reflog", "remote", "reset",
+                "restore", "rev-list", "rev-parse", "revert", "rm", "shortlog", "show", "show-ref", "stash",
+                "status", "submodule", "switch", "symbolic-ref", "tag", "update-ref", "version", "worktree"}
+MERGE_VALUE_OPTS = {"-m", "-F", "-s", "-X", "--strategy", "--strategy-option", "--file", "--message",
+                    "--into-name"}
+
+
+def _reads_hookspath(w):
+    """`git config core.hooksPath` / `--get core.hooksPath` / `--list`: reading it changes nothing."""
+    rest = [x.lower() for x in w[2:]]
+    return w[:2] == ["git", "config"] and (rest == ["core.hookspath"] or rest in (["--list"], ["-l"])
+                                           or (len(rest) == 2 and rest[0] in ("--get", "--get-all")))
+
+
+def _alias(sub, rw, repo):
+    """What `git <sub>` runs when <sub> is an alias: `-c alias.<sub>=...` on this command line first,
+    then the repository's config. '' when it is not one."""
+    key = "alias.%s=" % sub.lower()
+    for i, x in enumerate(rw):
+        v = rw[i + 1] if x == "-c" and i + 1 < len(rw) else (x[2:] if x.startswith("-c") else "")
+        if v.lower().startswith(key):
+            return v.split("=", 1)[1]
+    try:
+        r = subprocess.run([GIT, "config", "--get", "alias." + sub], cwd=str(repo), capture_output=True,
+                           text=True, timeout=10)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except Exception:
+        return ""
+
+
+def _expand_aliases(gits, repo):
+    """The git commands that git aliases in this line would really run.
+
+    FOUND 2026-10-28 (repo analysis): `git -c alias.ship='push --no-verify' ship origin HEAD:main`
+    skipped the pre-push hook and matched nothing here, and so did an alias left in the repo's config.
+    An alias may name another alias, or start with '!' and run a shell line."""
+    out = []
+    for w, rw in gits:
+        for _ in range(3):
+            if len(w) < 2 or w[1].startswith("-") or w[1] in GIT_BUILTINS:
+                break
+            val = _alias(w[1], rw, repo)
+            if not val:
+                break
+            line = (val[1:] if val.startswith("!") else "git " + val) + " " + " ".join(shlex.quote(x) for x in w[2:])
+            out.append(line)
+            nxt = [(p[1], p[2]) for p in _parts(line) if p[1]]
+            if not nxt or nxt[0][0][0] != "git":
+                break
+            w, rw = nxt[0]
+    return out
 
 
 def check_git(tool, ti):
@@ -392,6 +545,29 @@ def check_git(tool, ti):
         except Exception:
             pass
 
+    parts = _parts(str(ti.get("command") or ""))
+    gits = [(w, rw) for _, w, rw in parts if w and w[0] == "git"]
+
+    # core.hooksPath decides which pre-push hook git runs, so setting it - for one command with -c or
+    # GIT_CONFIG_*, or for good with `git config` - is --no-verify by another name. FOUND 2026-10-28 (repo
+    # analysis): `git -c core.hooksPath=/dev/null push` put unreviewed product code on a real remote.
+    for _, w, rw in parts:
+        env_set = any(re.match(r"(?i)^GIT_CONFIG_\w*=.*hookspath", x) for x in rw)
+        git_set = bool(w) and w[0] == "git" and "hookspath" in " ".join(rw).lower() and not _reads_hookspath(w)
+        if env_set or git_set:
+            block("hooks-path",
+                  "This changes core.hooksPath, which decides whether git runs the pre-push hook at all - "
+                  "the one check that sees where a push lands.",
+                  "Leave core.hooksPath alone. If the project needs another hooks folder (husky, lefthook), "
+                  "the owner sets it and re-runs install.sh so the pre-push hook is placed there.")
+
+    # What aliases in this line really run is checked like the line itself
+    expansions = _expand_aliases(gits, eff_repo)
+    if expansions:
+        cmd = cmd + " ; " + " ; ".join(expansions)
+        norm = re.sub(r"\bgit\s+-C\s+\S+", "git", cmd)
+        gits += [(p[1], p[2]) for e in expansions for p in _parts(e) if p[1] and p[1][0] == "git"]
+
     # WHERE a push lands is judged by the git pre-push hook (prepush.py), which
     # git tells the resolved destination. This used to be a regex here plus a
     # call to prepush about the CURRENT branch: `git push origin feat:main`
@@ -399,7 +575,9 @@ def check_git(tool, ti):
     # matched. Guessing a destination from command text is the failure; so
     # this layer only makes sure the hook can run: it exists, and is not skipped.
     if re.search(_PUSH, cmd):
-        if "--no-verify" in cmd:
+        # git accepts any unambiguous abbreviation of a long option: --no-verif and --no-veri skip
+        # the hook too (FOUND 2026-10-28, executed against a real remote)
+        if re.search(r"--no-veri", cmd):
             block("no-verify",
                   "--no-verify skips the pre-push hook - the one check that "
                   "sees where this push actually lands.",
@@ -456,13 +634,54 @@ def check_git(tool, ti):
                       f"broke this in one day because each was 'only config'.",
                       f"git checkout {integration}   (or a feature branch), commit "
                       f"there, then merge into {production} when it is accepted.")
-            # Promotion is the last moment an independent review can still
-            # happen. The CTO wrote auth in front of a money-spending proxy,
-            # reviewed its own work, merged and deployed - the read-only audit
-            # seat existed and was never launched.
-            # merge(?![-\w]): `git merge-base` / `git merge-file` are read-only
-            # plumbing. The old \bmerge\b matched them (GUARD-1, 2026-09-19).
-            if re.search(r"\bgit\s+merge(?![-\w])", norm) and integration in norm:
+            remotes = set(subprocess.run([GIT, "remote"], cwd=str(eff_repo), capture_output=True,
+                                         text=True).stdout.split())
+
+            def is_integration(ref):
+                ref = re.sub(r"^(refs/heads/|refs/remotes/|remotes/)", "", ref.lstrip("+"))
+                return ref == integration or any(ref == "%s/%s" % (r, integration) for r in remotes)
+
+            for w, _ in gits:
+                sub, args = (w[1] if len(w) > 1 else ""), w[2:]
+                # Authoring on production by another verb. FOUND 2026-10-28 (repo analysis): only
+                # `git commit` was checked, so a cherry-pick, revert or rebase onto it went through.
+                if sub in ("cherry-pick", "revert", "am", "rebase") and not {"--abort", "--quit"} & set(args):
+                    block("flow-direction",
+                          f"`git {sub}` writes new commits onto {production}. The rule is feature -> "
+                          f"{integration} -> {production}: {production} advances only by merging {integration}.",
+                          f"Do the {sub} on {integration} (or a feature branch), then promote {integration}.")
+                if sub == "pull":
+                    pos = [a for a in args if not a.startswith("-")]
+                    other = [r for r in pos[1:] if not is_integration(r.split(":", 1)[0])
+                             and r.split(":", 1)[0].lstrip("+") not in (production, "refs/heads/" + production)]
+                    if other:
+                        block("flow-direction",
+                              f"This pulls {other[0]} into {production}. Feature branches are integrated in "
+                              f"{integration} and tested there first.",
+                              f"Merge it into {integration}, verify, then merge {integration} into {production}.")
+                if sub != "merge" or {"--abort", "--continue", "--quit"} & set(args):
+                    continue
+                pos, skip = [], False
+                for a in args:
+                    if skip:
+                        skip = False
+                    elif a in MERGE_VALUE_OPTS:
+                        skip = True
+                    elif not a.startswith("-"):
+                        pos.append(a)
+                # The branch must BE the integration branch. FOUND 2026-10-28 (repo analysis): this
+                # was a substring test, so `git merge feat/development-hotfix` passed as a promotion.
+                if not pos or not all(is_integration(a) for a in pos):
+                    block("flow-direction",
+                          f"This merges something other than {integration} into "
+                          f"{production}. Feature branches are integrated in "
+                          f"{integration} and tested there first.",
+                          f"Merge it into {integration}, verify, then merge "
+                          f"{integration} into {production}.")
+                # Promotion is the last moment an independent review can still
+                # happen. The CTO wrote auth in front of a money-spending proxy,
+                # reviewed its own work, merged and deployed - the read-only audit
+                # seat existed and was never launched.
                 rv = REPO / ".ai-teammates" / "hooks" / "review.py"
                 if rv.exists():
                     r = subprocess.run([sys.executable, str(rv)], cwd=str(eff_repo),
@@ -474,15 +693,6 @@ def check_git(tool, ti):
                               + r.stdout.strip()[:700],
                               "Launch the read-only audit seat, then file the "
                               "result with review.py --record.")
-
-            m = re.search(r"\bgit\s+merge(?![-\w])(?!\s+--abort)([^|;&]*)", norm)
-            if m and integration not in m.group(1) and "--continue" not in norm:
-                block("flow-direction",
-                      f"This merges something other than {integration} into "
-                      f"{production}. Feature branches are integrated in "
-                      f"{integration} and tested there first.",
-                      f"Merge it into {integration}, verify, then merge "
-                      f"{integration} into {production}.")
 
 
 HANDLERS = (check_blocked_gate, check_card_scope, check_card_shell, check_seat_denies,

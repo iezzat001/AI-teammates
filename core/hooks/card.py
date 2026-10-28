@@ -23,6 +23,7 @@ architecture, and cannot go looking: that is the point.
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -99,7 +100,11 @@ ALLOW_RE = re.compile(r"^Bash\(([^()*;&|<>`$\\\n]+?)(:\*)?\)$")
 UNSAFE_LEAD = {"sh", "bash", "zsh", "fish", "dash", "ksh", "env", "sudo", "su", "eval", "exec", "xargs",
                "command", "nohup", "python", "python3", "node", "deno", "bun", "npx", "pnpm", "yarn", "perl",
                "ruby", "php", "osascript", "awk", "sed", "find", "tee", "dd", "cp", "mv", "rm", "ln", "chmod",
-               "chown", "truncate", "curl", "wget", "ssh", "scp", "rsync", "nc", "open"}
+               "chown", "truncate", "curl", "wget", "ssh", "scp", "rsync", "nc", "open",
+               # the guard refuses these in a card run (they write files), so a card cannot grant them either
+               "tar", "unzip", "zip", "gzip", "gunzip", "ed", "ex", "vi", "vim", "nvim", "nano", "emacs",
+               "ditto", "cpio", "split", "csplit", "shred", "install", "touch", "mkdir", "rmdir", "unlink",
+               "patch", "sftp", "timeout", "nice", "stdbuf", "caffeinate"}
 READ_ONLY_GIT = {"diff", "log", "show", "status", "grep", "blame", "ls-files", "rev-parse"}
 NPM_NO = {"install", "i", "ci", "exec", "x", "publish", "uninstall", "add", "update", "link", "rebuild"}
 
@@ -124,6 +129,53 @@ def allow_problems(card: dict) -> list:
         elif lead == "npm" and (len(words) < 2 or words[1] in NPM_NO):
             out.append(f"allow '{a}': npm may run a script (npm run <x>, npm test), not install or execute packages")
     return out
+
+
+# What runs a file named on its command line, and the files that define what a runner executes.
+RUNNERS = {"sh", "bash", "zsh", "dash", "ksh", "fish", "source", ".", "node", "deno", "bun", "tsx", "ts-node",
+           "python", "python3", "ruby", "perl", "php", "npx", "bunx", "osascript"}
+SCRIPT_HOSTS = {"package.json": {"npm", "pnpm", "yarn", "bun", "npx"}, "Makefile": {"make"}, "makefile": {"make"},
+                "GNUmakefile": {"make"}, "justfile": {"just"}, "Justfile": {"just"}, "Taskfile.yml": {"task"},
+                "pyproject.toml": {"poetry", "hatch", "pdm", "uv"}, "tox.ini": {"tox"}, "noxfile.py": {"nox"},
+                "Rakefile": {"rake"}, "deno.json": {"deno"}}
+
+
+def acceptance_runs_scope(card: dict, cmd: str, depth: int = 0) -> str:
+    """The in-scope file this acceptance command would EXECUTE, or ''.
+
+    FOUND 2026-10-28 (repo analysis): acceptance commands run as the owner, through `card.py accept`
+    during the run and again in the runner. When one executes a file the seat may edit, the seat
+    chooses what runs: in a sandbox `sh scripts/check.sh` wrote outside the worktree and pushed a
+    branch, past every seat rule. Not caught here: a test runner (npm test, pytest) running test files
+    the seat edits. SECURITY.md says so."""
+    def in_scope(x):
+        x = x[2:] if x.startswith("./") else x
+        return bool(x) and not x.startswith("-") and allowed_edit(card, x)
+    for seg in re.split(r"\|\||&&|[;|&\n]", cmd):
+        try:
+            w = shlex.split(seg)
+        except ValueError:
+            w = seg.split()
+        while w and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]):
+            w.pop(0)
+        if not w:
+            continue
+        verb = Path(w[0]).name
+        if in_scope(w[0]):
+            return w[0]
+        if verb in RUNNERS:
+            if "-c" in w[1:] and depth < 2:
+                i = w.index("-c")
+                hit = acceptance_runs_scope(card, w[i + 1], depth + 1) if i + 1 < len(w) else ""
+                if hit:
+                    return hit
+            hit = next((x for x in w[1:] if in_scope(x)), "")
+            if hit:
+                return hit
+        for e in edit_scope(card):
+            if verb in SCRIPT_HOSTS.get(Path(e).name, ()):
+                return e
+    return ""
 
 
 def validate(card: dict, expect_id: str = "") -> list:
@@ -178,6 +230,12 @@ def validate(card: dict, expect_id: str = "") -> list:
             bad.append("each acceptance needs a one-line shell command in 'run'")
         elif re.match(r"^[A-Z][a-z]+ [a-z]+ [a-z]+", cmd) and not re.search(r"[/.|&;$=-]", cmd):
             bad.append(f"acceptance '{cmd[:40]}...' reads like a sentence, not a command")
+        else:
+            ran = acceptance_runs_scope(card, cmd)
+            if ran:
+                bad.append(f"acceptance '{cmd[:50]}' runs {ran}, which this card lets the seat edit: the seat "
+                           "would choose what the check executes, as you. Check it another way (grep the file, a "
+                           "test the seat cannot edit), or take that file out of scope.edit")
 
     mem = (card.get("memory") or {}).get("text") or ""
     if len(mem) > L["max_memory_chars"]:

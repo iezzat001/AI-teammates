@@ -40,7 +40,9 @@ unnoticed. It now uses `--first-parent --no-merges`.
 The CTO may override with `AI_TEAMMATES_ALLOW='<why>' git push ...` — the
 environment of git, so it works from any harness, and it is logged to
 `events.jsonl`. The condition is that it says so, naming the files and the
-reason. (`--no-verify` is blocked: it skips the check instead of announcing it.)
+reason. (`--no-verify` is blocked: it skips the check instead of announcing it. So are its other
+spellings, found 2026-10-28: git's abbreviation `--no-veri`, `-c core.hooksPath=...` or
+`GIT_CONFIG_*` pointing git at another hooks folder, and an alias that runs `push --no-verify`.)
 
 An override announced is a judgement call. An override unmentioned is the
 guardrail not existing.

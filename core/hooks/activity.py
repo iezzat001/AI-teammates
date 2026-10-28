@@ -35,7 +35,13 @@ SECRET = re.compile(
     r"|AIza[A-Za-z0-9_\-]{20,}"        # google / gemini
     r"|eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]+"  # JWT (supabase)
     r"|xox[baprs]-[A-Za-z0-9\-]{8,}"   # slack
-    r"|ghp_[A-Za-z0-9]{20,}"           # github PAT
+    r"|gh[pousr]_[A-Za-z0-9]{20,}"     # github PAT, OAuth, app tokens
+    r"|github_pat_[A-Za-z0-9_]{22,}"   # github fine-grained PAT
+    # FOUND 2026-10-28 (repo analysis): the keys this system itself runs on passed unredacted
+    r"|sk-ant-[A-Za-z0-9_\-]{20,}"     # anthropic
+    r"|sk-(?:proj|svcacct|admin)-[A-Za-z0-9_\-]{20,}"   # openai
+    r"|(?:AKIA|ASIA)[0-9A-Z]{16}\b"    # aws access key id
+    r"|sb_secret_[A-Za-z0-9_\-]{10,}"  # supabase secret key
     r"|Bearer\s+\S+"
     r"|Authorization:\s*\S+"
     r")"

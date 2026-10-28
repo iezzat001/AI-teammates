@@ -77,17 +77,20 @@ def main() -> int:
               f"onto {production}; commit them on the integration branch: "
               f"{', '.join(record[:3])}")
     elif record and not check_only:
-        sh("add", *record)
+        sh("add", "--", *record)
         # Only commit if something actually staged — `git add` on an ignored or
         # already-clean path is a no-op and an empty commit would be noise.
-        if sh("diff", "--cached", "--name-only"):
+        if sh("diff", "--cached", "--name-only", "--", *record):
             msg = ("chore(session): commit the session record\n\n"
                    "board/docs/facts written during the session, committed so the\n"
                    "measurement does not live only in the working tree. Product code\n"
                    "is deliberately NOT auto-committed - that goes through a feature\n"
                    "branch and prepush.")
+            # The record paths, and nothing else that happens to be staged. FOUND 2026-10-28 (repo
+            # analysis): a bare `git commit` took the whole index, so staged product code went into
+            # this commit while the report below said it was "not auto-committed".
             r = subprocess.run([GIT, "-c", "user.name=cto",
-                                "-c", "user.email=cto@local", "commit", "-q", "-m", msg],
+                                "-c", "user.email=cto@local", "commit", "-q", "-m", msg, "--", *record],
                                cwd=REPO, capture_output=True, text=True)
             if r.returncode == 0:
                 print(f"  session: committed the record ({len(record)} path(s))")

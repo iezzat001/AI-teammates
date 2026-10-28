@@ -231,21 +231,30 @@ def block(h: dict) -> str:
     return f"[{h['source']} {h['id']}{when}{flags}] {h['title']}\n{h['text'].strip()}"
 
 
+CUT = " ...[cut]"
+
+
 def fit(hits: list, max_tokens: int):
     """Greedy by rank until the budget is used; the last hit is cut, not dropped.
-    -> (kept_hits, text, tokens)."""
-    kept, parts, used = [], [], 0
+    -> (kept_hits, text, tokens).
+
+    Budgeted in characters of the FINAL text, separators and the cut mark included. FOUND 2026-10-28
+    (repo analysis): counting tokens per hit missed both, so a slice reached 3216 chars and the card
+    it had just been attached to failed card.py check (max 3200)."""
+    limit = max_tokens * CHARS_PER_TOKEN
+    kept, parts, size = [], [], 0
     for h in hits:
         b = block(h)
-        t = est_tokens(b)
-        if used + t <= max_tokens:
-            kept.append(h); parts.append(b); used += t
+        sep = 2 if parts else 0                      # the blank line between hits
+        if size + sep + len(b) <= limit:
+            kept.append(h); parts.append(b); size += sep + len(b)
             continue
-        room = (max_tokens - used) * CHARS_PER_TOKEN
+        room = limit - size - sep - len(CUT)
         if room > 240:
-            kept.append(h); parts.append(b[:room].rstrip() + " ...[cut]"); used = max_tokens
+            kept.append(h); parts.append(b[:room].rstrip() + CUT)
         break
-    return kept, "\n\n".join(parts), used
+    text = "\n\n".join(parts)
+    return kept, text, est_tokens(text)
 
 
 def _pick(hits: list, spec: str) -> list:
