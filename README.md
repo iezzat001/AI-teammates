@@ -278,7 +278,8 @@ every tool call in the project.
 
 Contributions are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md): how to run the
 test suite in a minute, and the one rule every change follows (a guardrail must execute,
-not describe). Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report security
+not describe). AI coding agents read [AGENTS.md](AGENTS.md); planned work is in the
+[issues](https://github.com/iezzat001/AI-teammates/issues). Please follow the [Code of Conduct](CODE_OF_CONDUCT.md). Report security
 issues privately as described in [SECURITY.md](SECURITY.md).
 
 ## License

@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `AGENTS.md` (and `CLAUDE.md`, which imports it): how an AI agent picks an issue, works in its own
+  worktree, tests, and opens a pull request without touching the owner's tools or projects.
+
+### Added
+
 - The dashboard page now ships with AI-teammates (`.ai-teammates/dashboard/`): Board, Branches,
   Team, Rules & Guardrails and Activity, with `#tab` links. The server used to provide only the
   data, and its default folder exposed `config.json`.
