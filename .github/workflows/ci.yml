@@ -12,7 +12,7 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Shell syntax
         run: bash -n install.sh bin/cto scripts/test.sh
       - name: Python compiles
@@ -26,9 +26,13 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
         python: ["3.9", "3.13"]
+        exclude:
+          # Ubuntu 26.04 runners have no Python 3.9 build (3.9 is end-of-life); macOS still covers it
+          - os: ubuntu-latest
+            python: "3.9"
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - name: Run the suite in a throwaway project
