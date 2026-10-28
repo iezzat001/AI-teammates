@@ -47,7 +47,8 @@ if sp.exists():
         s["hooks"][event] = [e for e in entries if e["hooks"]]
         if not s["hooks"][event]:
             del s["hooks"][event]
-    sp.write_text(json.dumps(s, indent=2))
+    # keep the file's own last line ending: rewriting it without one was a diff on every run
+    sp.write_text(json.dumps(s, indent=2) + ("\n" if sp.read_text().endswith("\n") else ""))
     print("  claude  : hooks unregistered")
 PY
   HOOK="$(cd "$PROJECT" && python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import _config; print(_config.hooks_dir())' "$DEST/hooks")/pre-push"
@@ -174,6 +175,13 @@ def load(p):
                  f"         Not rewriting it. Fix or back it up, then re-run.")
 
 
+def save(p, obj):
+    """Write JSON keeping the file's own last line ending (new files get one). FOUND 2026-10-28: the
+    rewrite dropped it, so every upgrade showed a one-character diff in .claude/settings.json."""
+    end = "\n" if not p.exists() or p.read_text().endswith("\n") else ""
+    p.write_text(json.dumps(obj, indent=2) + end)
+
+
 # Claude Code — merge, never clobber: the project may have its own hooks.
 sp = proj / ".claude" / "settings.json"
 sp.parent.mkdir(exist_ok=True)
@@ -231,7 +239,7 @@ for event, cmd in wanted:
     if not any(hooks in json.dumps(e) and script in json.dumps(e) for e in entries):
         entries.append({"hooks": [{"type": "command", "command": cmd}]})
         added.append(event)
-sp.write_text(json.dumps(settings, indent=2))
+save(sp, settings)
 print(f"  claude  : hooks registered in .claude/settings.json ({len(added)} added"
       + (f", {len(replaced)} duplicate(s) removed" if replaced else "") + ")")
 
@@ -248,7 +256,7 @@ for k in ("**/.env", "**/.env.*", ".ai-teammates/**", "**/secrets/**"):
     edit[k] = "deny"
 perm.setdefault("external_directory", "deny")
 perm.setdefault("webfetch", "deny")
-op.write_text(json.dumps(oc, indent=2))
+save(op, oc)
 print("  opencode: deny-list written to opencode.json")
 PY
 

@@ -47,6 +47,15 @@ git add -A && git commit -qm "initial"
 echo "── install ──"
 "$SRC/install.sh"
 git add -A && git commit -qm "chore: install AI-teammates"
+# An upgrade of an installed project must change only what changed. FOUND 2026-10-28: every re-run
+# rewrote .claude/settings.json without its final newline - a diff on every upgrade of a project whose
+# file ends in one, as files saved by an editor or by Claude Code do. So: give it one, then re-install.
+tail -c1 .claude/settings.json | od -An -c | grep -q '\\n' || { echo >> .claude/settings.json; git commit -qam "editor: final newline"; }
+"$SRC/install.sh" > /dev/null
+if [ -n "$(git status --porcelain)" ]; then
+  echo "FAIL: re-running install.sh on an installed project changed:"; git status --porcelain; exit 1
+fi
+echo "  ok    re-running install.sh changes nothing"
 git branch development
 git worktree add -q "$WORK/project-dev" development
 

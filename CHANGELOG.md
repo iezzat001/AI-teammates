@@ -47,6 +47,8 @@ without its fix:
   re-confirm can be cleared.
 - A memory slice could exceed what `card.py check` accepts (3216 of 3200 characters).
 - `card-clean --abandon` kept the seat's uncommitted edits off the archive tag it promised.
+- Re-running `install.sh` rewrote `.claude/settings.json` without its final newline, a diff on
+  every upgrade. It keeps each file's line ending now; `scripts/test.sh` checks a re-install changes nothing.
 - The test suite reports a crashing check as one failure and runs the rest, and
   `scripts/test.sh` reuses MemPalace's embedding model instead of downloading it every run.
 
