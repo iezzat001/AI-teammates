@@ -1,0 +1,108 @@
+# MemPalace vs claude-mem on ContentOS: 2026-10-02
+
+Corpus: 559 documents (board cards, RULES.md sections, git history). 12 questions, k=5, each query repeated 3x (first run discarded for latency). Queried through `memslice.py`, the adapter the CTO uses. A hit answers when ONE returned item contains every `must` pattern. Each system is scored with prose questions and with keyword queries; claude-mem with both of its routes (`/api/search` and the semantic route its own prompt hook uses).
+
+## Arm A: live stores as they are today
+
+Includes whatever each system failed to capture. claude-mem stored nothing from 2026-08-03 until its repair on 2026-10-02.
+
+### Arm A: live stores as they are today
+
+| system / query style | answered | hit@1 | hit@3 | hit@5 | MRR | tokens (5 hits) | tokens to 1st answer | p50 s | p95 s |
+|---|---|---|---|---|---|---|---|---|---|
+| mempalace / prose | 11 q | 36% | 55% | 55% | 0.45 | 1911 | 1099 | 0.87 | 0.91 |
+| mempalace / keywords | 11 q | 36% | 45% | 45% | 0.39 | 1707 | 1007 | 0.87 | 0.93 |
+| claude-mem /search / prose | 11 q | 0% | 0% | 0% | 0.00 | 1982 | 1982 | 0.51 | 0.54 |
+| claude-mem /search / keywords | 11 q | 0% | 0% | 0% | 0.00 | 2033 | 2033 | 0.51 | 0.54 |
+| claude-mem /semantic / prose | 11 q | 0% | 0% | 0% | 0.00 | 1138 | 1138 | 0.45 | 0.46 |
+| claude-mem /semantic / keywords | 11 q | 0% | 0% | 0% | 0.00 | 929 | 929 | 0.45 | 0.54 |
+
+claude-mem /search's cheap first step (titles only, before fetching), tokens: prose ~740, keywords ~731
+A question with NO answer still returns tokens (the cost of a useless lookup): mempalace / prose 1530, mempalace / keywords 1476, claude-mem /search / prose 1875, claude-mem /search / keywords 1988, claude-mem /semantic / prose 1117, claude-mem /semantic / keywords 1117
+
+| question | mp prose | mp keywords | cm/search prose | cm/search keywords | cm/semantic prose | cm/semantic keywords |
+|---|---|---|---|---|---|---|
+| deploy-move (fact) | **1** | **1** | miss | miss | miss | miss |
+| cowork-hooks (fact) | **1** | **1** | miss | miss | miss | miss |
+| only-database (fact) | **2** | **3** | miss | miss | miss | miss |
+| honcho (fact) | miss | miss | miss | miss | miss | miss |
+| proxy-auth (fact) | miss | miss | miss | miss | miss | miss |
+| seats-unguarded (fact) | **2** | miss | miss | miss | miss | miss |
+| groq-stt (fact) | **1** | **1** | miss | miss | miss | miss |
+| qwen-rejected (fact) | **1** | **1** | miss | miss | miss | miss |
+| git-c-guard (fact) | miss | miss | miss | miss | miss | miss |
+| current-memory (recency) | miss | miss | miss | miss | miss | miss |
+| anthropic-seats (fact) | miss | miss | miss | miss | miss | miss |
+| no-answer (abstain) | n/a | n/a | n/a | n/a | n/a | n/a |
+
+## Arm B: identical documents in both
+
+Isolates retrieval quality from capture history.
+
+### Arm B: identical documents in both
+
+| system / query style | answered | hit@1 | hit@3 | hit@5 | MRR | tokens (5 hits) | tokens to 1st answer | p50 s | p95 s |
+|---|---|---|---|---|---|---|---|---|---|
+| mempalace / prose | 11 q | 82% | 82% | 91% | 0.84 | 895 | 251 | 0.84 | 0.85 |
+| mempalace / keywords | 11 q | 73% | 73% | 82% | 0.75 | 852 | 294 | 0.83 | 0.85 |
+| claude-mem /search / prose | 11 q | 0% | 0% | 0% | 0.00 | 591 | 591 | 0.20 | 0.20 |
+| claude-mem /search / keywords | 11 q | 0% | 0% | 0% | 0.00 | 466 | 466 | 0.20 | 0.20 |
+| claude-mem /semantic / prose | 11 q | 0% | 0% | 0% | 0.00 | 647 | 647 | 0.12 | 0.13 |
+| claude-mem /semantic / keywords | 11 q | 0% | 0% | 0% | 0.00 | 463 | 463 | 0.12 | 0.13 |
+
+claude-mem /search's cheap first step (titles only, before fetching), tokens: prose ~164, keywords ~150
+A question with NO answer still returns tokens (the cost of a useless lookup): mempalace / prose 583, mempalace / keywords 904, claude-mem /search / prose 288, claude-mem /search / keywords 266, claude-mem /semantic / prose 340, claude-mem /semantic / keywords 320
+
+| question | mp prose | mp keywords | cm/search prose | cm/search keywords | cm/semantic prose | cm/semantic keywords |
+|---|---|---|---|---|---|---|
+| deploy-move (fact) | **1** | **1** | miss | miss | miss | miss |
+| cowork-hooks (fact) | **1** | **1** | miss | miss | miss | miss |
+| only-database (fact) | **1** | **1** | miss | miss | miss | miss |
+| honcho (fact) | miss | miss | miss | miss | miss | miss |
+| proxy-auth (fact) | **1** | **1** | miss | miss | miss | miss |
+| seats-unguarded (fact) | **1** | **1** | miss | miss | miss | miss |
+| groq-stt (fact) | **1** | **1** | miss | miss | miss | miss |
+| qwen-rejected (fact) | **1** | **1** | miss | miss | miss | miss |
+| git-c-guard (fact) | **1** | miss | miss | miss | miss | miss |
+| current-memory (recency) | **4** | **4** | miss | miss | miss | miss |
+| anthropic-seats (fact) | **1** | **1** | miss | miss | miss | miss |
+| no-answer (abstain) | n/a | n/a | n/a | n/a | n/a | n/a |
+
+---
+
+## Two follow-up checks (run after the tables above)
+
+**Is claude-mem's miss a ranking problem or a "cannot find it" problem?** Arm B, identical documents, answer present
+*anywhere* in the k results (order ignored):
+
+| route / query style | k=5 | k=10 | k=20 | k=50 |
+|---|---|---|---|---|
+| `/api/search`, prose | 0/11 | 0/11 | 0/11 | 4/11 |
+| `/api/search`, keywords | 0/11 | 0/11 | 0/11 | 4/11 |
+| `/api/context/semantic`, prose | 0/11 | 0/11 | 0/11 | 0/11 |
+| `/api/context/semantic`, keywords | 0/11 | 0/11 | 0/11 | 0/11 |
+
+A query for "Honcho" returns 100 results although only a handful of documents mention it, listed newest-first, with the
+answering card at position 100. `/api/search` is returning neighbours, not matches, and display order is by date.
+
+**Is Arm B unfair to claude-mem, because it stores LLM-compressed observations rather than raw documents?** Probe
+(`bench.py native`): 25 of claude-mem's *own* ContentOS observations, each queried with its own one-line description.
+claude-mem finds its own observation in the top 5 **6 of 25 times** (24%) on both routes. So the weak result is not an
+artefact of feeding it raw documents.
+
+## What this does and does not show
+
+- On ContentOS decision records, MemPalace put the answer at rank 1 for 82% of questions (91% within 5) on identical
+  documents, and needed ~250 tokens to reach it. claude-mem did not return the answer in its top 5 for any of the 11, on
+  either route, in either query style.
+- claude-mem is cheaper per call (about 460-650 tokens for 5 hits against 850-900) and faster (0.12-0.5 s against 0.85 s;
+  MemPalace pays a python start on every call). That does not help when the answer is not in what it returns.
+- Live (arm A), MemPalace answered 36% at rank 1 and 55% within 5. Its misses are decisions that were never filed: nothing
+  has been written to the `contentos` wing since 2026-09-10. claude-mem holds 32 ContentOS observations, none about these.
+- **Capture is the other half and is not a retrieval question.** claude-mem captures automatically but spends an observer
+  LLM call per observation (~7.6k tokens recorded each) and silently stored nothing from 2026-08-03 to 2026-10-02.
+  MemPalace captures for free but only when something files it.
+
+Limits: 11 questions on one codebase, so one question is 9 points; the questions are decisions and incidents, which suit
+MemPalace's verbatim records; and claude-mem's other strengths (a timeline of what happened, lookup by file, automatic
+context injection) are not tested here.

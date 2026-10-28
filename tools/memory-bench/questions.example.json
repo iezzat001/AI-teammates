@@ -1,0 +1,30 @@
+{
+  "_comment": "Copy to questions.json and replace these with questions about YOUR project. `q` is phrased the way a CTO would look something up while writing a card; `kw` is the same lookup as keywords. A hit counts only when ONE returned item matches every regex in `must`. Check each answer really is in the project's board.json, .ai-teammates/RULES.md or git history (`bench.py check` refuses to score a question the corpus cannot answer). Keep one `abstain` question whose answer is NOT in the project: it measures what a useless lookup costs.",
+  "questions": [
+    {
+      "id": "deploy-target",
+      "type": "fact",
+      "src": "board OPS-1",
+      "q": "where does production get deployed and why",
+      "must": ["(?i)deploy", "(?i)(cloudflare|vercel|fly|render)"],
+      "kw": "production deploy target"
+    },
+    {
+      "id": "current-db",
+      "type": "recency",
+      "src": "git log (the newest decision, not the first one)",
+      "q": "which database does the project use now",
+      "must": ["(?i)(postgres|supabase|sqlite)"],
+      "kw": "database current"
+    },
+    {
+      "id": "no-answer",
+      "type": "abstain",
+      "src": "nothing in the project mentions it",
+      "q": "what is the Kubernetes cluster setup",
+      "must": [],
+      "trap": "(?i)(kubernetes|k8s)",
+      "kw": "Kubernetes cluster setup"
+    }
+  ]
+}

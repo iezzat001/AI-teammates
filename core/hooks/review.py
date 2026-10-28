@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Security-touching changes need a second pair of eyes before they reach
+production. Not the same pair that wrote them.
+
+WHY THIS EXISTS (2026-09-10). The CTO wrote authentication in front of a proxy
+that spends money and writes user data, reviewed its own work, merged it, and
+deployed it. The security-audit seat existed - Claude Code in plan mode,
+read-only, on the model that has found three real bypasses in three runs - and
+was never launched. Across a whole day of work, every closed card read
+`agent=cto` and not one seat ran.
+
+That was not defiance. The role file said "delegate bounded work" and never said
+when delegation is REQUIRED, so it was advice, and advice loses to "I can just
+do this". Same shape as the branch flow: a stated rule with nothing checking it.
+
+So this states it as a condition a machine can evaluate: if the diff being
+promoted touches auth, secrets, permissions or money, an audit record must exist
+that covers those commits, and it must not have been produced by the author.
+
+    python3 review.py                      # check what development would promote
+    python3 review.py --range main..HEAD   # check a specific range
+    python3 review.py --record <agent>     # file an audit record for the current HEAD
+"""
+import json
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _config  # noqa: E402
+
+GIT = _config.GIT
+REPO = _config.repo_root()
+REVIEWS = _config.state_dir() / "reviews.jsonl"
+
+# Paths and content that decide who can do what, or what gets spent.
+#
+# PRECISION MATTERS MORE THAN RECALL HERE. The first version matched "auth"
+# anywhere, so it flagged every file under a `_authenticated/` route group, and
+# matched bare "deny"/"allow"/"permission" in content, so it flagged the
+# guardrail scripts themselves. A check that fires on ordinary work is the
+# "rule nobody can satisfy" failure - people override it by habit and then miss
+# the real one. Narrow enough to be believed.
+SENSITIVE_PATH = re.compile(
+    r"(?:^|/)("
+    r"[^/]*auth[^/]*\.(ts|tsx|js|py|go|rb)|"     # authX.ts, not _authenticated/
+    r"[^/]*(token|secret|credential|keyring|allowlist)[^/]*|"
+    r"\.env[^/]*|wrangler\.[^/]+|"
+    r"[^/]*(middleware|guard|policy|rbac|acl)[^/]*\.(ts|tsx|js|py)"
+    r")$", re.I)
+# Content signals that actually move a trust boundary. No bare deny/allow/verify.
+SENSITIVE_CODE = re.compile(
+    r"(Authorization\s*[:=]|Bearer\s|service_role|"
+    r"api[_-]?key\s*[:=]|SECRET[_A-Z]*\s*[:=]|"
+    r"\.signIn|\.signUp|getUser\(|getSession\(|"
+    r"jwt|hmac|createHmac|signature|"
+    r"USER_IDS|_ALLOWLIST)", re.I)
+# Never flag the guardrails themselves — they are full of these words by nature.
+EXEMPT_PATH = re.compile(r"\.ai-teammates/|(^|/)docs/|\.md$", re.I)
+
+
+def sh(*args):
+    return subprocess.run([GIT, *args], cwd=REPO,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def load_reviews() -> list:
+    if not REVIEWS.exists():
+        return []
+    out = []
+    for line in REVIEWS.read_text().splitlines():
+        line = line.strip()
+        if line:
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return out
+
+
+def _completed_audit_run(agent: str, rng: str) -> bool:
+    """A finished, exit-0 run of a READ-ONLY seat, started after the newest
+    commit it claims to cover.
+
+    FOUND 2026-09-19: `--record cto` passed the gate. Nothing compared the
+    reviewer to anything, so the author could certify its own work - the one
+    thing this file exists to prevent. A name is not evidence; a run is."""
+    import seat
+    a = seat.load_agents().get(agent)
+    if not a or a.get("read_only") != "true":
+        return False
+    newest = sh("log", "-1", "--format=%cI", rng)
+    if not newest or not seat.RUNS.exists():
+        return False
+    since = datetime.fromisoformat(newest)
+    for line in seat.RUNS.read_text().splitlines():
+        try:
+            r = json.loads(line)
+            # A card run can exit 0 and still be blocked or failed: it must have ended done.
+            if (r.get("agent") == agent and r.get("exit") == 0
+                    and r.get("status", "done") == "done"
+                    and datetime.fromisoformat(r["ts"]) >= since):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def record(agent: str, rng: str) -> int:
+    if not _completed_audit_run(agent, rng):
+        print(f"  refused: no completed run of a read-only seat '{agent}' after the "
+              f"newest commit in {rng}.\n  Reviews come from an audit run, not from "
+              f"the author. Run:\n    python3 .ai-teammates/hooks/seat.py run "
+              f"security-audit \"Audit {rng}. Report findings only.\"")
+        return 1
+    commits = [l for l in sh("log", "--format=%H", rng).splitlines() if l]
+    REVIEWS.parent.mkdir(parents=True, exist_ok=True)
+    with REVIEWS.open("a") as f:
+        f.write(json.dumps({
+            "at": datetime.now(timezone.utc).isoformat(),
+            "reviewer": agent,
+            "range": rng,
+            "commits": commits,
+        }) + "\n")
+    print(f"  review filed by {agent} covering {len(commits)} commit(s)")
+    return 0
+
+
+def main() -> int:
+    production, integration = _config.branches()
+
+    if "--record" in sys.argv:
+        i = sys.argv.index("--record")
+        agent = sys.argv[i + 1] if len(sys.argv) > i + 1 else "unknown"
+        rng = production + "..HEAD"
+        if "--range" in sys.argv:
+            rng = sys.argv[sys.argv.index("--range") + 1]
+        return record(agent, rng)
+
+    if "--range" in sys.argv:
+        rng = sys.argv[sys.argv.index("--range") + 1]
+    elif integration:
+        rng = f"{production}..{integration}"
+    else:
+        rng = "HEAD~1..HEAD"
+
+    commits = [l for l in sh("log", "--format=%H %s", rng).splitlines() if l]
+    if not commits:
+        print("  review  ok    nothing waiting to be promoted")
+        return 0
+
+    # Which of these commits touch something that decides access or spend?
+    flagged = []
+    for line in commits:
+        sha, _, subj = line.partition(" ")
+        files = [f for f in sh("show", "--name-only", "--format=", sha).splitlines()
+                 if f and not EXEMPT_PATH.search(f)]
+        hits = [f for f in files if SENSITIVE_PATH.search(f)]
+        if not hits and files:
+            # Path names are not the whole story - a plain-looking file can add
+            # an Authorization header. Look at the added lines too.
+            # Only the added lines, and only in files we did not exempt.
+            diff = sh("show", "--format=", "-U0", "--", *files) if files else ""
+            if not diff:
+                diff = sh("show", "--format=", "-U0", sha)
+            added = "\n".join(l for l in diff.splitlines()
+                               if l.startswith("+") and not l.startswith("+++"))
+            if SENSITIVE_CODE.search(added):
+                hits = ["(content)"]
+        if hits:
+            flagged.append((sha[:7], subj[:56], hits[:3]))
+
+    if not flagged:
+        print(f"  review  ok    {len(commits)} commit(s) to promote, none security-touching")
+        return 0
+
+    reviewed = set()
+    for r in load_reviews():
+        reviewed.update(c[:7] for c in r.get("commits", []))
+
+    unreviewed = [f for f in flagged if f[0] not in reviewed]
+    if not unreviewed:
+        print(f"  review  ok    {len(flagged)} security-touching commit(s), all reviewed")
+        return 0
+
+    print(f"\n  UNREVIEWED SECURITY CHANGES — {len(unreviewed)} commit(s) decide access "
+          f"or spend and no independent review covers them:")
+    for sha, subj, hits in unreviewed[:8]:
+        print(f"    {sha}  {subj}")
+        print(f"             touches: {', '.join(hits)}")
+    print(f"\n  These were written and are about to be promoted by the same agent.")
+    print(f"  The security-audit seat is read-only by construction and exists for this.")
+    print(f"\n    python3 .ai-teammates/hooks/seat.py run security-audit \\")
+    print(f"      \"Audit {rng}. Report findings only; you cannot write.\"")
+    print(f"\n  Then file the result:")
+    print(f"    python3 .ai-teammates/hooks/review.py --record security-audit --range {rng}")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

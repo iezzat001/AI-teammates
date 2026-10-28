@@ -1,0 +1,45 @@
+name: Bug report
+description: Something does not work as documented
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Found a way around a guardrail? Please report it privately instead: see SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, and what you saw. Paste the exact output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. ~/AI-teammates/install.sh in a project with ...
+        2. cto "..."
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `cto --doctor`
+      render: text
+  - type: textarea
+    id: suite
+    attributes:
+      label: Output of `python3 .ai-teammates/hooks/guardrail_test.py` (the FAIL and note lines are enough)
+      render: text
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: macOS 15.5

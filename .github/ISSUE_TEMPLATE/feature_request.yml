@@ -1,0 +1,22 @@
+name: Feature or new rule
+description: Propose a change, a new guardrail, or a new teammate
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What went wrong, or what is hard today? A real incident is the strongest reason for a new rule.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you propose
+    validations:
+      required: true
+  - type: textarea
+    id: check
+    attributes:
+      label: How it would be checked
+      description: Guardrails here must execute, not describe. Which check would prove it works, and would fail without it?

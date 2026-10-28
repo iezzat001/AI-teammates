@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+# Talk to the CTO.
+#
+#   cto                 interactive session — you talk, it works, you talk again
+#   cto "do the thing"  one task, headless, exits when done
+#   cto --doctor        check the environment and leave
+#
+# Runs from anywhere inside the project. Pre-flight happens before you type.
+
+set -uo pipefail
+
+# --- locate the project and this installation ------------------------------
+REPO="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo "not inside a git repository — cd into your project first" >&2; exit 1; }
+CFG="$REPO/.ai-teammates"
+[ -d "$CFG" ] || { echo "AI-teammates is not installed here. Run: ai-teammates install" >&2; exit 1; }
+HOOKS="$CFG/hooks"
+# Claude Code runs from REPO, whatever directory `cto` was started in: its
+# project settings and hook paths are resolved from the session's directory.
+cd "$REPO"
+
+# The CTO works where work is authored: the integration checkout. Started on
+# the production branch it can commit nothing (the flow guard blocks it), so on
+# 2026-09-19 its board edits were stranded as dirty files on main. Hop over.
+read -r PROD_BR INT_BR <<< "$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import _config; p, i = _config.branches(); print(p, i or "")' "$HOOKS" 2>/dev/null)"
+if [ -n "${INT_BR:-}" ] && [ "$(git rev-parse --abbrev-ref HEAD)" = "${PROD_BR:-}" ]; then
+  WT="$(git worktree list --porcelain | awk -v b="branch refs/heads/$INT_BR" '/^worktree /{w=substr($0,10)} $0==b{print w}')"
+  if [ -n "$WT" ] && [ "$WT" != "$REPO" ]; then
+    echo "  cto: $(basename "$REPO") is on $PROD_BR — switching to the $INT_BR checkout: $WT"
+    cd "$WT" && exec "$0" "$@"
+  fi
+  echo "  cto: on $PROD_BR and no $INT_BR worktree exists. Create one first:"
+  git rev-parse --verify --quiet "refs/heads/$INT_BR" >/dev/null || echo "       git branch $INT_BR $PROD_BR"
+  echo "       git worktree add ../$(basename "$REPO")-dev $INT_BR"
+  echo "       cd ../$(basename "$REPO")-dev && cto"
+  exit 1
+fi
+
+# Apple's git first. /usr/local/bin/git has been a 2021 build (2.19) that lacks
+# --sparse; OpenCode snapshots with `git add --sparse` before every edit, and it
+# failed 247 times inside a harness before anyone noticed. Cheap insurance.
+export PATH="/usr/bin:$PATH"
+
+# One python call, three values. The earlier form put `|| echo` between the
+# heredoc marker and its body, which silently made the heredoc part of the
+# fallback string — `cto --doctor` printed python source where the model name
+# should have been. Caught on the first run of a fresh install.
+# config.json is the one place the CTO's model lives (cto.md no longer repeats it).
+# cto.effort (low|medium|high|xhigh|max) is passed as `claude --effort`; "default" or unset = the CLI's own.
+# cto.mcp: "none" (default) = no MCP servers; "inherit" = every server in your user config and plugins;
+# or a path to an MCP config file = only those servers.
+read -r MODEL PROVIDER CTX EFFORT CTO_MCP <<< "$(python3 -c '
+import json,sys
+try:
+    c = json.load(open(sys.argv[1])).get("cto", {})
+except Exception:
+    c = {}
+print(c.get("model") or "default", c.get("provider") or "anthropic", c.get("context_window") or 1048576,
+      c.get("effort") or "default", c.get("mcp") or "none")
+' "$CFG/config.json" 2>/dev/null || echo "default anthropic 1048576 default none")"
+CTO_MCP="${CTO_MCP:-none}"
+# cto.tools: the built-in tools the CTO is offered ("default" = all of them). MEASURED 2026-10-06:
+# the CTO used 7 tools in ~400 calls over six sessions (plus TaskStop once), and was offered 24,
+# with a list of 6 subagent types and ~40 skills it never invoked. Naming the working set cut a
+# one-word Opus 5.5 call from 26,601 to 9,942 tokens; removing the Skill and Task tools also
+# removes the skill and subagent listings. Typed /commands still work for the owner.
+CTO_TOOLS="$(python3 -c '
+import json,sys
+try:
+    c = json.load(open(sys.argv[1])).get("cto", {})
+except Exception:
+    c = {}
+t = c.get("tools") or "Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch,TaskStop"
+print(",".join(t) if isinstance(t, list) else t)
+' "$CFG/config.json" 2>/dev/null || echo "Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch,TaskStop")"
+# cto.claude_md_excludes: CLAUDE.md files the CTO does not load (e.g. a personal global one that
+# says nothing about this codebase): ~2.2k tokens per call for the owner's, measured 2026-10-06.
+CTO_SETTINGS="$(python3 -c '
+import json,os,sys
+try:
+    ex = json.load(open(sys.argv[1])).get("cto", {}).get("claude_md_excludes") or []
+except Exception:
+    ex = []
+print(json.dumps({"claudeMdExcludes": [os.path.expanduser(x) for x in ex]}) if ex else "")
+' "$CFG/config.json" 2>/dev/null)"
+MODEL="${MODEL:-default}"; PROVIDER="${PROVIDER:-anthropic}"; CTX="${CTX:-1048576}"; EFFORT="${EFFORT:-default}"
+case "$EFFORT" in low|medium|high|xhigh|max|default) ;; *) echo "  cto: config.json cto.effort '$EFFORT' is not low|medium|high|xhigh|max - using the default"; EFFORT=default ;; esac
+
+# `ollama launch` routes Claude Code at an Ollama model, but ANTHROPIC_API_KEY
+# takes precedence if set — the session would quietly run on Anthropic instead:
+# wrong model, real money, and it reports success either way. Only on that
+# path: with provider=anthropic (install's own fallback) the key IS the auth.
+[ "$PROVIDER" = "anthropic" ] || unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN 2>/dev/null || true
+
+# `cto` is a live link to the AI-teammates repo; the hooks are the copy the
+# project installed. When they drift, cto can call hooks that are not there
+# (it skips a missing one silently) - say so instead.
+SRC_HOOKS="$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$0")")/../core/hooks"
+if [ -d "$SRC_HOOKS" ]; then
+  stale=0
+  for f in "$SRC_HOOKS"/*.py; do cmp -s "$f" "$HOOKS/$(basename "$f")" || stale=$((stale+1)); done
+  [ "$stale" -eq 0 ] || STALE_NOTE="  NOTE: $stale hook(s) here differ from this cto's version — re-run: ai-teammates install"
+fi
+
+# Is memory CAPTURING? First this tested that ~/.claude-mem exists, then that the
+# worker answered - which it did for eight days while nothing was kept. Now it
+# asks whether anything is being KEPT: the last observation and the queue.
+mem_status() {
+  python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import _config
+m = _config.mem_capture(); print(("capturing: " if m["ok"] else "NOT capturing: ") + m["why"])
+sys.exit(0 if m["ok"] else 1)' "$HOOKS" 2>/dev/null || return 1
+}
+
+# --- doctor ----------------------------------------------------------------
+if [ "${1:-}" = "--doctor" ]; then
+  echo "── environment ─────────────────────────────────────────"
+  tools="claude git python3 node bun uv"; [ "$PROVIDER" = ollama ] && tools="$tools ollama"
+  for c in $tools; do
+    v="$(command -v "$c" >/dev/null 2>&1 && ($c --version 2>/dev/null | head -1) || echo '— missing')"
+    printf "  %-9s %s\n" "$c" "$v"
+  done
+  echo
+  echo "  git in use : $(command -v git) $(git --version | awk '{print $3}')"
+  [ "$PROVIDER" = ollama ] && echo "  models     : $(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}' | tr '\n' ' ')"
+  echo "  cto model  : $MODEL ($PROVIDER), effort $EFFORT, mcp $CTO_MCP"
+  echo "  cto tools  : $CTO_TOOLS${CTO_SETTINGS:+ (CLAUDE.md excluded: $CTO_SETTINGS)}"
+  echo "  claude     : $(claude auth status 2>/dev/null | grep -q '"loggedIn": true' && echo 'signed in' || echo 'NOT signed in — claude auth login')"
+  echo "  claude-mem : $(mem_status)"
+  exit 0
+fi
+
+# --- pre-flight ------------------------------------------------------------
+# FOUND 2026-10-03 on the first real ContentOS session: this block printed to the TERMINAL and
+# the brief said "Pre-flight output is above" - but the model is only ever handed the brief, so
+# the CTO never saw a line of it and greeted the owner with "pre-flight clean" over two guardrail
+# failures and a memory check reading NOT capturing. A check reading a source that cannot
+# contain the fact, in the launcher itself. Now the output streams to the terminal AND is kept,
+# and what did not pass is put into the brief.
+preflight() {
+  local rc=0
+  echo "── pre-flight ──────────────────────────────────────────"
+
+  # Informational only. This used to EXIT when any seat ran - so you could not
+  # open the CTO to review the run it was worried about (and a seat in another
+  # project blocked this one). The double-run guard now lives in `seat.py run`.
+  [ -f "$HOOKS/seat_status.py" ] && python3 "$HOOKS/seat_status.py" || true
+
+  echo
+  [ -f "$HOOKS/guardrail_test.py" ] && { python3 "$HOOKS/guardrail_test.py" || rc=1; }
+
+  # Facts get VERIFIED here, not read from a doc. A CTO once synthesised an
+  # ssh target by combining the ssh user from one doc with the API host from
+  # another - both true, the combination not. Checking them costs two sockets.
+  # The flow invariant: development must contain main. Shown every session,
+  # because the rule broke five times in one day while every individual check
+  # said OK - each bypass was "only config".
+  [ -f "$HOOKS/flow.py" ] && { echo; python3 "$HOOKS/flow.py" || rc=1; }
+
+  [ -f "$HOOKS/facts.py" ] && { echo; python3 "$HOOKS/facts.py" || true; }
+
+  echo
+  echo "── git ─────────────────────────────────────────────────"
+  printf "  on %s · %s dirty · %s worktrees\n" \
+    "$(git rev-parse --abbrev-ref HEAD)" \
+    "$(git status --porcelain | wc -l | tr -d ' ')" \
+    "$(git worktree list | wc -l | tr -d ' ')"
+
+  echo "  memory: $(mem_status)"
+  # commits since the standing facts were last checked (the Stop hook asks within a session; this
+  # catches what a session left behind)
+  [ -f "$HOOKS/memlife.py" ] && { python3 "$HOOKS/memlife.py" pending 2>/dev/null || true; }
+  [ -n "${STALE_NOTE:-}" ] && echo "$STALE_NOTE"
+  return $rc
+}
+
+PF_DIR="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import _config; print(_config.state_dir())' "$HOOKS" 2>/dev/null)"
+if [ -d "$PF_DIR" ]; then PF_LOG="$PF_DIR/preflight.txt"; else PF_LOG="$(mktemp -t cto-preflight)"; fi
+preflight 2>&1 | tee "$PF_LOG"
+fail=${PIPESTATUS[0]}
+
+# What the model is told: everything that did not simply pass, ANSI stripped; passes are counted.
+PF_SUMMARY="$(python3 -c '
+import re, sys
+lines = [re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", l.rstrip()) for l in open(sys.argv[1], errors="ignore")]
+passed = sum(1 for l in lines if re.match(r"\s+ok\s", l))
+keep = [l for l in lines if l.strip() and not re.match(r"\s+ok\s", l)
+        and not re.match(r"\s{2}[A-Z][A-Z -]+ — ", l) and not l.startswith("──")]
+print("\n".join(keep))
+print(f"({passed} checks passed and are not listed; the full output is in {sys.argv[1]})")' "$PF_LOG" 2>/dev/null)"
+[ -n "$PF_SUMMARY" ] || PF_SUMMARY="(pre-flight output could not be summarised; read $PF_LOG)"
+
+# Signed out, Claude Code cannot start this session at all - and claude-mem's
+# observer uses the same sign-in, so memory stops with it. Stop here.
+if [ "$PROVIDER" = "anthropic" ] && ! claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then
+  echo; echo "  STOP  Claude Code is not signed in. Run:  claude auth login"; exit 1
+fi
+
+if [ "$fail" -ne 0 ]; then
+  echo
+  echo "  Pre-flight found problems above. They are the first task of this"
+  echo "  session, not a reason to stop."
+fi
+
+# --- the brief -------------------------------------------------------------
+# The open cards go in the brief; the whole board.json does not (see board.py cmd_ls).
+OPEN_CARDS="$(python3 "$CFG/hooks/board.py" ls --open 2>/dev/null | sed 's/^/  /')"
+[ -n "$OPEN_CARDS" ] || OPEN_CARDS="  (board unavailable: python3 $CFG/hooks/board.py ls --open)"
+
+BRIEF="You are the CTO for this project. Before anything else, read these two and follow
+them for the whole session:
+
+  $CFG/agents/cto.md          your role, powers, and the review protocol
+  $CFG/docs/07-FAILURE-CATALOGUE.md   the nine ways this project has been wrong before
+
+Read these when the work calls for them, not before:
+  $CFG/docs/02-GUARDRAILS.md  when a guard fires, or before you touch a rule
+  $CFG/docs/04-ROUTING.md     before you write a card (which tier, which model)
+
+THE BOARD, open cards only (one card in full: python3 $CFG/hooks/board.py show <ID>;
+do not read board.json whole, most of it is closed history):
+$OPEN_CARDS
+
+PRE-FLIGHT RESULT: what actually ran a moment ago, everything that did not simply pass.
+Report it accurately in your greeting. Never call it clean unless the lines below show
+no failure, no NOT, no WARNING.
+
+$PF_SUMMARY
+
+If anything failed, fix it before new work (and ask the owner where it is theirs to decide).
+
+Three habits above all others. First: before asserting anything, ask whether the
+thing you read could physically contain the fact you are claiming - a check
+pointed at a source that cannot see the thing has been our most expensive
+failure, nine times over. Second: when you delegate, verify the result landed
+before you report it; a hung harness returns a confident report and no diff.
+Third: when something only the human can fix blocks you - an approval, a login,
+billing, sudo, a missing tool or credential, a guardrail you think is wrong -
+STOP and ask in one short message: what is blocked, what you tried (at most
+twice), the exact thing you need from them. Never route around it, and never
+edit a guardrail, hook or settings file to get past it. Seconds of the owner's
+time are cheaper than minutes of yours."
+
+echo
+echo "── CTO · $MODEL · effort $EFFORT ────────────────"
+echo
+
+# --- launch ----------------------------------------------------------------
+# PROMPT FIRST, flags after: --allowedTools is variadic and will consume a
+# trailing prompt as tool patterns, then die with "Input must be provided".
+# Pre-approved without asking. Deliberately NOT here:
+#   python3:* / npx:*  arbitrary code - and wrapping git in python3 walked past
+#                      guard.py's command checks. Only our own hook scripts.
+#   ssh / scp          production deploys need the human's word: interactive
+#                      sessions ask you, headless (`cto "task"`) cannot deploy.
+# Added: the checks the review protocol prescribes (process table, model list,
+# checksums), which were previously refused in headless mode.
+ALLOW="Bash(git:*),Bash(curl:*),Bash(npm:*),Bash(rg:*),Bash(ls:*),Bash(cat:*),\
+Bash(pgrep:*),Bash(ps:*),Bash(ollama list:*),Bash(md5:*),Bash(shasum:*),\
+Read,Edit,Write,Glob,Grep"
+for h in seat seat_status board review flow facts guardrail_test prepush check_build_env session_end loopguard card memslice memlife; do
+  ALLOW="$ALLOW,Bash(python3 .ai-teammates/hooks/$h.py:*)"
+done
+# Project-specific exact commands, e.g. the NON-production deploy:
+#   "cto": {"allow": ["npx wrangler deploy --name myapp-development"]}
+# Exact prefixes, never a whole tool: removing npx:* made the development
+# deploy impossible headless, and the answer is not to give npx back.
+EXTRA="$(python3 -c 'import json,sys; print(",".join("Bash(%s:*)" % a for a in json.load(open(sys.argv[1])).get("cto", {}).get("allow", [])))' "$CFG/config.json" 2>/dev/null)"
+[ -n "$EXTRA" ] && ALLOW="$ALLOW,$EXTRA"
+
+launch() {
+  # Appended LAST: --tools takes a list, and a prompt after it would be read as a tool name
+  # (the --allowedTools trap in 04-ROUTING). The callers pass the brief first.
+  [ "$CTO_TOOLS" != "default" ] && set -- "$@" --tools "$CTO_TOOLS"
+  [ -n "$CTO_SETTINGS" ] && set -- --settings "$CTO_SETTINGS" "$@"
+  if [ "$PROVIDER" = "anthropic" ]; then
+    # config.json cto.model was ignored on this path: every session ran on
+    # whatever Claude Code defaulted to.
+    [ "$EFFORT" != "default" ] && set -- --effort "$EFFORT" "$@"
+    # MEASURED 2026-10-05: the CTO inherited every MCP server in the owner's setup (claude.ai
+    # connectors, five Cloudflare plugin servers, claude-mem search). They connect after the first
+    # call and their tool definitions then ride in EVERY call: ~100k tokens of a ~200k baseline on
+    # Opus, re-read from cache 100+ times a session. The CTO used two of those tools in three days.
+    # It works through the shell and the hooks; plugins (claude-mem capture) still load.
+    case "$CTO_MCP" in
+      inherit) ;;
+      none)    set -- --strict-mcp-config "$@" ;;
+      *)       set -- --strict-mcp-config --mcp-config "$CTO_MCP" "$@" ;;
+    esac
+    if [ -n "$MODEL" ] && [ "$MODEL" != "default" ]; then
+      claude --model "$MODEL" "$@"
+    else
+      claude "$@"
+    fi
+  else
+    # Claude Code does not recognise Ollama model names and would assume a 200k
+    # window, silently truncating. The [1m] suffix is a Claude Code convention
+    # that `ollama launch` rejects against its own registry; the env var is the
+    # form that works on this path.
+    export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$CTX"      # config.json cto.context_window
+    ollama launch claude --model "$MODEL" -- "$@"
+  fi
+}
+
+export CTO_PROJECT="$REPO"
+export CLAUDE_AGENT_NAME=cto
+
+if [ $# -gt 0 ]; then
+  # Headless: nobody is there to answer a permission prompt. On ContentOS this
+  # mode produced 101 of 230 tool errors - approval denials the model answered by
+  # rephrasing, up to nine in a row. loopguard turns the first denial into a
+  # BLOCKED ask and ends the run on the next, and the report below says what the
+  # owner has to do. --permission-prompts none: anything that would prompt is
+  # denied up front, which is what the hook then answers.
+  export AI_TEAMMATES_HEADLESS=1
+  START="$(date -u +%Y-%m-%dT%H:%M:%S)"
+  launch -p "$BRIEF
+
+TASK: $*" --permission-mode acceptEdits --permission-prompts none --allowedTools "$ALLOW" < /dev/null
+  rc=$?
+  python3 "$HOOKS/loopguard.py" report --since "$START"
+  exit $rc
+else
+  # Interactive. The session stays open: give it a task, read the report, give
+  # it the next one, without re-running pre-flight or re-reading the docs.
+  launch "$BRIEF
+
+Greet the user in one line with the current branch and anything pre-flight
+flagged, then wait for the first task." --permission-mode acceptEdits --allowedTools "$ALLOW"
+fi

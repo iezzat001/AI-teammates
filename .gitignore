@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.DS_Store
+
+# your own benchmark inputs and raw outputs (tools/memory-bench/README.md)
+tools/memory-bench/questions.json
+tools/memory-bench/results/raw-*.json
