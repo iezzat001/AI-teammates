@@ -527,6 +527,41 @@ def check_guard():
             else:
                 bad(f"guard: [{where}] {cmd} -> exit {p.returncode}, expected {want}")
 
+        # The CTO's session runs in the development checkout. FOUND 2026-10-28 (repo analysis): an
+        # edit was judged by THAT checkout, so a product file in the production checkout, written by
+        # its absolute path, passed; and config.json - card limits, protected branches, product
+        # paths, required denies, the CTO's own pre-approved commands - changed without asking.
+        sh("worktree", "add", "-q", "-b", "feat/x", str(Path(td) / "p-feat"))
+
+        def judge(tool, ti):
+            """'block', 'ask' or 'allow', for the CTO's session in the development checkout."""
+            p = subprocess.run([sys.executable, str(script)], cwd=dev_wt, env={**env, "CLAUDE_AGENT_NAME": "cto"},
+                               input=json.dumps({"tool_name": tool, "tool_input": ti}), capture_output=True, text=True)
+            return "block" if p.returncode == 2 else "ask" if '"ask"' in p.stdout else "allow"
+        edit = lambda f: judge("Edit", {"file_path": str(f)})
+        bash = lambda c: judge("Bash", {"command": c})
+        heredoc = ("python3 - <<'PY'\nimport json\np = '.ai-teammates/config.json'\nc = json.load(open(p))\n"
+                   "c['cards'] = {'max_edit_files': 20}\njson.dump(c, open(p, 'w'))\nPY")
+        cases = [
+            ("a product file in the production checkout, by absolute path", edit(main_wt / "src" / "a.ts"), "block"),
+            ("the production checkout's hooks, by absolute path", edit(main_wt / ".ai-teammates" / "hooks" / "guard.py"), "ask"),
+            ("config.json, with Edit", edit(dev_wt / ".ai-teammates" / "config.json"), "ask"),
+            ("config.json, with Write", judge("Write", {"file_path": str(dev_wt / ".ai-teammates" / "config.json"),
+                                                       "content": "{}"}), "ask"),
+            ("config.json, by a python heredoc", bash(heredoc), "ask"),
+            ("config.json, by sed -i", bash("sed -i '' s/5/20/ .ai-teammates/config.json"), "ask"),
+            ("config.json, by a redirect", bash("echo '{}' > .ai-teammates/config.json"), "ask"),
+            ("config.json, by git checkout of an older copy", bash("git checkout HEAD~3 -- .ai-teammates/config.json"), "ask"),
+            ("CONTROL: a product file in a feature worktree", edit(Path(td) / "p-feat" / "src" / "a.ts"), "allow"),
+            ("CONTROL: reading config.json", bash("cat .ai-teammates/config.json | python3 -m json.tool"), "allow"),
+            ("CONTROL: running a hook script", bash("python3 .ai-teammates/hooks/card.py check X-1"), "allow"),
+            ("CONTROL: memlife retire-term (it adds a memory tombstone)",
+             bash("python3 .ai-teammates/hooks/memlife.py retire-term foo --why bar"), "allow"),
+            ("CONTROL: the board", edit(dev_wt / ".ai-teammates" / "board.json"), "allow"),
+        ]
+        for desc, got, want in cases:
+            (ok if got == want else bad)(f"guard: CTO edits {desc} -> {got}" + ("" if got == want else f", expected {want}"))
+
 
 def check_loopguard():
     """Does the stop-and-ask guard trip on a human-only loop, and ONLY on that?

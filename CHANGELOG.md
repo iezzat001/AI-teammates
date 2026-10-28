@@ -19,6 +19,13 @@ All notable changes to this project are documented here. The format follows
 Gaps found by an analysis of the guardrails, each now executed by the test suite and seen to fail
 without its fix:
 
+- `config.json` changed without asking the owner, though it holds the card size limits, the
+  protected branches, the product paths, the seats' denied commands and the CTO's pre-approved
+  commands: one edit let a card of any size through. Editing it now asks, by edit or by shell
+  (redirect, `sed -i`, `git checkout`, an interpreter's heredoc); reading it does not.
+- An edit was judged by the checkout the session runs in, so the CTO could edit product code, or
+  the hooks, in the production checkout by absolute path. It is now judged by the checkout the
+  file is in.
 - The pre-push hook could be skipped past the guard with `git -c core.hooksPath=...`,
   `GIT_CONFIG_*`, `git config core.hooksPath`, the abbreviation `--no-veri`, or a git alias that
   runs `push --no-verify`. All are refused now.

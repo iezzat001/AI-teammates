@@ -60,8 +60,9 @@ your failures by class and will stop you. Do not wait for it.
 - auth, login, token or billing errors (401/402/403, "not signed in", "usage credits")
 - `sudo`, a password, a passphrase, a y/n prompt
 - a missing tool or a missing credential
-- a guardrail block you think is wrong. Say so. Never edit `guard.py`, the hooks or
-  `.claude/settings.json` to get past it; those edits always ask the owner.
+- a guardrail block you think is wrong. Say so. Never edit `guard.py`, the hooks,
+  `.claude/settings.json` or `.ai-teammates/config.json` to get past it; those edits always ask the owner.
+  That includes the card limits in `config.json`: a card that is too big is split, never let through.
 
 **Two attempts at most.** The same command spelled differently is the same attempt.
 If the second fails for a human-only reason, stop.

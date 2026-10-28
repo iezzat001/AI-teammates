@@ -390,22 +390,108 @@ def rel_path(p):
         return p.replace(str(REPO) + "/", "")
 
 
-# Editing the guardrails is a decision for the owner, never a way past a block.
-GUARDRAIL_FILES = (".ai-teammates/hooks/", ".claude/settings.json", ".claude/settings.local.json")
+def _locate(p):
+    """(checkout, path inside it, that checkout's branch) for the checkout the file is IN, or None when
+    it is in no checkout of this repository.
+
+    FOUND 2026-10-28 (repo analysis): every path rule judged a file against the checkout the SESSION
+    runs in. The CTO's session runs in the development checkout, so a product file in the production
+    checkout, written by its absolute path, was "outside the repo" and passed; so did that checkout's
+    hooks. A worktree has its own branch: the file's own checkout is the one that matters."""
+    pp = (Path(p) if os.path.isabs(p) else REPO / p).resolve()
+    d = pp.parent
+    while not d.exists() and d != d.parent:          # a new file in a new folder
+        d = d.parent
+    run = lambda *a: subprocess.run([GIT, "-C", str(d), *a], capture_output=True, text=True, timeout=10)
+    top = run("rev-parse", "--show-toplevel")
+    if top.returncode != 0:
+        return None
+    common = run("rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
+    if not common or Path(common).resolve() != _config.common_dir().resolve():
+        return None                                  # another repository: not this project's rules
+    top = Path(top.stdout.strip()).resolve()
+    try:
+        rel = str(pp.relative_to(top))
+    except ValueError:
+        return None
+    return top, rel, run("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+
+
+# Editing the guardrails is a decision for the owner, never a way past a block. config.json is one of
+# them (FOUND 2026-10-28, repo analysis): it holds the card size limits, the protected branches, the
+# product paths, the seats' denied commands and the CTO's own pre-approved commands, and a single edit
+# to "cards" let a card of any size through.
+GUARDRAIL_FILES = (".ai-teammates/hooks/", ".claude/settings.json", ".claude/settings.local.json",
+                   ".ai-teammates/config.json")
+_GUARDRAIL_TEXT = re.compile(r"\.ai-teammates/(?:hooks/|config\.json)|\.claude/settings(?:\.local)?\.json")
+
+
+def _is_guardrail(rel):
+    return rel.startswith(GUARDRAIL_FILES[0]) or rel in GUARDRAIL_FILES[1:]
+
+
+def _guardrail_rel(word):
+    """The guardrail file a shell word names, or ''."""
+    if not _GUARDRAIL_TEXT.search(word):
+        return ""
+    try:
+        loc = _locate(word)
+    except Exception:
+        loc = None
+    rel = loc[1] if loc else rel_path(word)
+    return rel if _is_guardrail(rel) else ""
+
+
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n(.*?)(?:\n[ \t]*\2[ \t]*(?=\n|$)|$)", re.S)
+
+
+def shell_guardrail_write(cmd):
+    """The guardrail file this shell line would change, or ''.
+
+    A file the line merely NAMES is not a write (`cat config.json`, `python3 .ai-teammates/hooks/card.py`
+    runs a hook, it does not change one). It counts when the same simple command writes (a redirect,
+    sed -i, cp, git checkout, ...) or is an interpreter, and when an interpreter is fed a heredoc that
+    names one: that is how the ContentOS CTO edited JSON files."""
+    for m in _HEREDOC.finditer(cmd):
+        line = cmd[cmd.rfind("\n", 0, m.start()) + 1:m.start()]
+        head = [w for _, w, _ in _parts(line) if w]
+        if head and head[-1][0] in OPAQUE and _GUARDRAIL_TEXT.search(m.group(3)):
+            return _GUARDRAIL_TEXT.search(m.group(3)).group(0)
+    for blank, w, raw in _parts(_HEREDOC.sub(lambda m: m.group(0).split("\n", 1)[0], cmd)):
+        if not w:
+            continue
+        words = list(raw)
+        if w[0] in ("python", "python3") and len(w) > 1 and w[1].startswith(".ai-teammates/hooks/") \
+                and w[1].endswith(".py"):
+            words = [x for x in words if x != w[1]]      # running a hook script is not writing it
+        named = next((r for r in (_guardrail_rel(x) for x in words) if r), "")
+        if named and (_write_reason(blank, w) or w[0] in OPAQUE):
+            return named
+    return ""
 
 
 def check_guardrail_files(tool, ti):
-    if tool not in ("Edit", "Write", "NotebookEdit", "MultiEdit"):
+    if tool == "Bash":
+        rel = shell_guardrail_write(str(ti.get("command") or ""))
+    elif tool in ("Edit", "Write", "NotebookEdit", "MultiEdit"):
+        p = str(ti.get("file_path") or ti.get("path") or ti.get("notebook_path") or "")
+        if not p:
+            return
+        try:
+            loc = _locate(p)
+        except Exception:
+            loc = None
+        rel = loc[1] if loc else rel_path(p)
+        rel = rel if _is_guardrail(rel) else ""
+    else:
         return
-    p = str(ti.get("file_path") or ti.get("path") or ti.get("notebook_path") or "")
-    if not p:
-        return
-    rel = rel_path(p)
-    if rel.startswith(GUARDRAIL_FILES[0]) or rel in GUARDRAIL_FILES[1:]:
+    if rel:
+        what = ("holds the guardrail settings: card size limits, protected branches, product paths, the "
+                "seats' denied commands and the CTO's pre-approved commands" if rel.endswith("config.json")
+                else "is part of the guardrails")
         ask("guardrail-files",
-            "%s is part of the guardrails. Changing them is the owner's decision; "
-            "it is not a way past a block. If a guard fires on correct behaviour, "
-            "say so and propose the fix instead." % rel)
+            "%s %s. Changing it is the owner's decision; it is not a way past a block. If a guard fires "
+            "on correct behaviour, say so and propose the fix instead." % (rel, what))
 
 
 def check_frontend_edit(tool, ti):
@@ -429,31 +515,34 @@ def check_frontend_edit(tool, ti):
     p = str(ti.get("file_path") or ti.get("path") or ti.get("notebook_path") or "")
     if not p:
         return
-    rel = rel_path(p)
+    # Which checkout is the FILE in, and which branch is that checkout on? A worktree has its own HEAD,
+    # and that is the whole point - seats and the CTO work on feature branches there.
+    try:
+        loc = _locate(p)
+    except Exception:
+        loc = False                      # could not tell: judge it as this checkout's, below
+    if loc is None:
+        return                           # in no checkout of this repository
+    if loc:
+        top, rel, branch = loc
+    else:
+        top, rel = REPO, rel_path(p)
+        branch = _config.branches()[0]   # fail closed: unknown = production
     if not rel.startswith(_config.guarded()):
         return
     # Mechanical files inside guarded paths (generated code, tool config).
     # Project-specific: config "edit_exempt", a list of regexes.
     if any(re.search(x, rel) for x in _config.load()["edit_exempt"]):
         return
-    # Which branch is THIS checkout on? A worktree has its own HEAD, and that
-    # is the whole point - seats and the CTO work on feature branches there.
-    try:
-        branch = subprocess.run(
-            [GIT, "rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=str(REPO), capture_output=True, text=True, timeout=10
-        ).stdout.strip()
-    except Exception:
-        branch = _config.branches()[0]   # fail closed: unknown = production
 
     if branch not in _config.protected():
         return                   # feature branch: this is where product work belongs
 
     block(
         "product-code-on-protected",
-        "%s is product code and this checkout is on '%s'. Product code is "
+        "%s is product code in the checkout %s, which is on '%s'. Product code is "
         "edited on a feature branch in a worktree, so the change is reviewable "
-        "and the pre-push hook can gate it." % (rel, branch),
+        "and the pre-push hook can gate it." % (rel, top.name, branch),
         "Work in a feature worktree (git worktree add ../<project>-<name> -b "
         "feat/<name>), or delegate to a seat: seat.py run <seat> \"<task>\".",
     )
