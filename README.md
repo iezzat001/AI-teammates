@@ -39,7 +39,7 @@ Built on [Claude Code](https://claude.com/claude-code). Works with any git proje
 | [claude-mem](https://github.com/thedotmack/claude-mem) | optional | remembering past sessions |
 | [MemPalace](https://github.com/MemPalace/mempalace) | optional | memory slices on task cards |
 
-Tested on macOS. Linux should work; reports are welcome.
+Tested on macOS and Linux (CI runs the full suite on both).
 
 ---
 
