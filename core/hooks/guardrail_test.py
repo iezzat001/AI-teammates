@@ -203,6 +203,14 @@ def check_tracked():
         ok("opencode.json is on main — new worktrees inherit it")
     else:
         bad("opencode.json is NOT on main — any new worktree starts unguarded")
+    # Every hook run writes hooks/__pycache__/. Unignored, the tree is never clean and `git add -A`
+    # commits bytecode (FOUND 2026-10-28 by CI). install.sh writes .ai-teammates/.gitignore for it.
+    r = subprocess.run([GIT, "check-ignore", "-q", ".ai-teammates/hooks/__pycache__/x.pyc"],
+                       cwd=REPO, capture_output=True)
+    if r.returncode == 0:
+        ok("the hooks' bytecode (.ai-teammates/hooks/__pycache__) is ignored")
+    else:
+        bad("the hooks' bytecode is NOT ignored: every hook run dirties the tree — re-run: ai-teammates install")
 
 
 def check_prepush():
@@ -1331,6 +1339,9 @@ def check_fact_review():
         g("config", "user.email", "t@t"); g("config", "user.name", "t")
         ai = proj / ".ai-teammates"
         shutil.copytree(here, ai / "hooks", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        # as install.sh does: without it, running the hooks writes .pyc files that the next
+        # `git add -A` commits, and a board-only commit stops being board-only (CI, 2026-10-28)
+        (ai / ".gitignore").write_text("hooks/__pycache__/\n")
         (ai / "agents").mkdir()
         cfgp = ai / "config.json"
         cfg = {"protected_branches": ["main", "development"], "memory": {"mempalace_wing": "p"}}

@@ -93,6 +93,11 @@ for f in "$SRC"/core/agents/*.md; do
   fi
 done
 cp "$SRC"/docs/*.md         "$DEST/docs/"
+# Running a hook writes hooks/__pycache__/ (unless PYTHONDONTWRITEBYTECODE is set). In a
+# project with no Python .gitignore that left .pyc files in every tree, and `git add -A` committed
+# them (FOUND 2026-10-28 by CI: a board-only commit counted as a change of truth). Our own folder,
+# our own ignore file: the project's .gitignore is left alone.
+grep -qx 'hooks/__pycache__/' "$DEST/.gitignore" 2>/dev/null || echo 'hooks/__pycache__/' >> "$DEST/.gitignore"
 chmod +x "$DEST"/hooks/*.py 2>/dev/null || true
 echo "  hooks   : $(ls "$DEST"/hooks/*.py | wc -l | tr -d ' ')"
 echo "  agents  : $(ls "$DEST"/agents/*.md 2>/dev/null | wc -l | tr -d ' ')"

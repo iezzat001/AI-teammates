@@ -37,3 +37,9 @@ First public release.
   project doesn't have one yet.
 - The dashboard's owner label comes from `config.json` `owner` instead of a hardcoded name.
 - `tools/memory-bench` takes any project (`BENCH_PROJECT`) and your own questions file.
+
+### Fixed
+
+- The hooks' bytecode (`.ai-teammates/hooks/__pycache__/`) is ignored through
+  `.ai-teammates/.gitignore`. Before, every hook run left `.pyc` files in projects without a
+  Python `.gitignore`, and `git add -A` committed them. The suite now checks for it.
