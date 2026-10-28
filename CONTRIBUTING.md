@@ -62,9 +62,11 @@ core/hooks/               every hook and CLI (Python, standard library only)
   memslice.py, memlife.py memory slices for cards, and keeping memory true
   guardrail_test.py       the test suite (runs at every `cto` start, and in CI)
 core/agents/              teammate specs (copied into a project once; cto.md is updated on upgrade)
+core/dashboard/           the dashboard page, served by hooks/dashboard_server.py
 docs/                     user documentation (copied into each project)
 tools/memory-bench/       MemPalace vs claude-mem retrieval benchmark
 scripts/test.sh           run the suite in a sandbox
+scripts/dashboard_demo.py serve the dashboard for an invented project; --shots regenerates docs/images
 ```
 
 ## Making a change
@@ -86,6 +88,13 @@ scripts/test.sh           run the suite in a sandbox
   rule next to it (`FOUND <date>: ...`). Keep that habit when you fix something real.
 - **Measure before you claim.** If a change is about cost or speed, put the numbers and how
   you measured them in the pull request.
+
+## The dashboard
+
+`python3 scripts/dashboard_demo.py` builds an invented project with this checkout's installer and
+serves its dashboard on http://127.0.0.1:8790, so you can work on the page without a real project.
+If you change what the page shows, regenerate the README screenshots (needs Google Chrome or
+Chromium): `python3 scripts/dashboard_demo.py --shots docs/images`.
 
 ## Docs
 

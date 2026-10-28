@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- The dashboard page now ships with AI-teammates (`.ai-teammates/dashboard/`): Board, Branches,
+  Team, Rules & Guardrails and Activity, with `#tab` links. The server used to provide only the
+  data, and its default folder exposed `config.json`.
+- `scripts/dashboard_demo.py`: the dashboard for an invented project, and the README screenshots.
+- The README explains how a task flows, and how a teammate differs from a Claude Code subagent.
+
 ### Security
 
 Gaps found by an analysis of the guardrails, each now executed by the test suite and seen to fail

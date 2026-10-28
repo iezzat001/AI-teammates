@@ -11,7 +11,8 @@ because it is believed. So /git.json is computed per request instead.
 Endpoints: /git.json (live git state), /board.json (cards + generated roster),
 /team.json, /rules.json, /health.json (all generated), /events.jsonl (activity
 log from the shared state dir). Everything else is a static file from
-config "dashboard_dir" (the UI).
+config "dashboard_dir": by default the UI that ships with AI-teammates
+(.ai-teammates/dashboard/index.html). Open http://127.0.0.1:8899 once it runs.
 """
 import json
 import subprocess
@@ -28,7 +29,9 @@ import _config  # noqa: E402
 # always come from .ai-teammates. 2026-09-10: two board copies drifted and the
 # Team tab showed seats retired in one but not the other, and the Activity tab
 # served a frozen old events log. One canonical source each, served explicitly.
-SERVE = REPO / _config.load().get("dashboard_dir", ".ai-teammates")
+# Default: the UI that ships in .ai-teammates/dashboard. It used to be .ai-teammates itself, which also
+# served config.json and facts.json to anything that could reach the port.
+SERVE = REPO / _config.load().get("dashboard_dir", ".ai-teammates/dashboard")
 PROD = _config.branches()[0]
 # /board.json, /rules.json, /team.json and /health.json are generated (below).
 DATA = {"/events.jsonl": (_config.state_dir() / "events.jsonl", "text/plain")}
@@ -94,6 +97,7 @@ def git_state():
     dirty = [l for l in sh("status", "--porcelain").splitlines() if l.strip()]
     fh = _config.common_dir() / "FETCH_HEAD"          # when remote refs were last true
     return {
+        "production": PROD,
         "current": current,
         "branches": branches,
         "worktrees": worktrees,
@@ -132,6 +136,17 @@ def _ago(ts: str) -> str:
         f"{int(secs // 3600)}h ago" if secs < 86400 else f"{int(secs // 86400)}d ago")
 
 
+def _model(name: str, a: dict) -> str:
+    """What runs the agent, in words. The CTO's model lives in config.json only (its spec names none),
+    so the spec's `?` and a bare `default` both read as nothing to someone looking at the panel."""
+    if name == "cto":
+        c = _config.load().get("cto") or {}
+        m = c.get("model") or "default"
+        m = "Claude Code's default model" if m == "default" else m
+        return m + (f", effort {c['effort']}" if c.get("effort") not in (None, "", "default") else "")
+    return a.get("model") or "?"
+
+
 def team() -> dict:
     import seat
     import seat_status
@@ -151,8 +166,7 @@ def team() -> dict:
                      "role": "Owner. Approves production deploys, spend and secrets."}}
     for i, name in enumerate(sorted(specs, key=lambda n: (n != "cto", n))):
         a = dict(specs[name])
-        if name == "cto":                    # the CTO's model lives in config.json only
-            a["model"] = (_config.load().get("cto") or {}).get("model") or a.get("model", "?")
+        a["model"] = _model(name, a)
         if name in live:
             state = f"RUNNING (pid {live[name]['pid']}, {live[name]['etime']})"
         elif name in last:
@@ -164,13 +178,19 @@ def team() -> dict:
         out[name] = {"label": a.get("seat", name), "colour": a.get("colour") or COLOURS[i % len(COLOURS)],
                      "reports_to": "owner" if name == "cto" else "cto",
                      "role": f"{a.get('harness', '?')} + {a.get('model', '?')} · "
-                             f"{a.get('worktree', '.')}{ro} · {state}"}
+                             + ("the integration checkout" if name == "cto" else
+                                f"cards run in their own worktree" if a.get("writes") == "true" else a.get("worktree", "."))
+                             + f"{ro} · {state}"}
     return out
 
 
 def board() -> dict:
+    import board as boardmod
     b = json.loads((REPO / ".ai-teammates" / "board.json").read_text(encoding="utf-8"))
     b["agents"] = team()                    # roster from the specs, never hand-kept
+    # install.sh writes plain column ids; the page wants {id, label}. board.py accepts both.
+    b["columns"] = boardmod.columns(b)
+    b["project"] = _config.load().get("project") or REPO.name
     return b
 
 
@@ -210,7 +230,7 @@ def rules() -> dict:
             "Product paths are edited only on a feature branch: "
             + ", ".join(code(g) for g in _config.guarded()) + ".",
             "Override a push only out loud: " + code("AI_TEAMMATES_ALLOW='<why>' git push …") + " (logged)."]
-    seats = [f"<b>{_esc(a.get('seat', n))}</b> — {_esc(a.get('harness'))} + {code(a.get('model', '?'))}"
+    seats = [f"<b>{_esc(a.get('seat', n))}</b> — {_esc(a.get('harness'))} + {code(_model(n, a))}"
              + (" · read-only" if a.get("read_only") == "true" else "")
              for n, a in sorted(seat.load_agents().items(), key=lambda x: (x[0] != "cto", x[0]))]
     src = [p for p in (REPO / ".ai-teammates" / "RULES.md", REPO / ".ai-teammates" / "config.json") if p.exists()]
@@ -289,6 +309,7 @@ class Handler(SimpleHTTPRequestHandler):
 
 if __name__ == "__main__":
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8899
+    print(f"  dashboard: http://127.0.0.1:{port}  (serving {SERVE}; Ctrl-C to stop)", flush=True)
     ThreadingHTTPServer(
         ("127.0.0.1", port),
         partial(Handler, directory=str(SERVE)),

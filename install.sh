@@ -80,8 +80,9 @@ if [ "$(printf '%s\n2.25.0\n' "$gv" | sort -V | head -1)" != "2.25.0" ]; then
 fi
 
 # --- lay down the files ----------------------------------------------------
-mkdir -p "$DEST"/{hooks,agents,docs,briefs}
+mkdir -p "$DEST"/{hooks,agents,docs,briefs,dashboard}
 cp "$SRC"/core/hooks/*.py   "$DEST/hooks/"
+cp "$SRC"/core/dashboard/*  "$DEST/dashboard/"       # the dashboard page: core-owned, upgraded like the hooks
 # Seat specs are PROJECT-owned once installed: copy only those missing, with the
 # real project name. Re-installs used to overwrite them, and the templates'
 # literal ../PROJECT-ui made every project in one folder share one worktree.

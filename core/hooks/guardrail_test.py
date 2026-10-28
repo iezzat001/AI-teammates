@@ -1709,6 +1709,33 @@ def check_board_digest():
                "the full note with every detail" in run("show", "OPEN-1") and "no task" in run("show", "NOPE-9"))
 
 
+def check_dashboard():
+    """Does the dashboard that ships with the hooks serve this project's real state?
+
+    Executed in-process against this project: the page exists where the server looks by default, each
+    generated panel has the shape the page reads, and the default folder does not hand out config.json
+    (until 2026-10-28 the server's default folder was .ai-teammates itself)."""
+    print("\n  DASHBOARD — does the shipped page get the data it reads?")
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    expect = lambda desc, cond: (ok if cond else bad)(f"dashboard: {desc}")
+    import dashboard_server as ds
+    if _config.load().get("dashboard_dir"):
+        note(f"dashboard: this project serves its own page from {ds.SERVE} (config dashboard_dir)")
+    else:
+        expect("the page ships in .ai-teammates/dashboard (re-run `ai-teammates install` if not)",
+               (ds.SERVE / "index.html").exists())
+        expect("the default folder does not serve config.json or facts.json",
+               not (ds.SERVE / "config.json").exists() and not (ds.SERVE / "facts.json").exists())
+    b, g = ds.board(), ds.git_state()
+    expect("board.json: columns as {id, label}, the project's name, a generated roster with the CTO in it",
+           all(isinstance(c, dict) and "id" in c and "label" in c for c in b.get("columns", []))
+           and bool(b.get("project")) and "cto" in b.get("agents", {}))
+    expect("git.json: the production branch, the current branch and the worktrees, computed now",
+           g.get("production") == _config.branches()[0] and bool(g.get("current")) and bool(g.get("worktrees")))
+    r = ds.rules()
+    expect("rules.json: the enforced branch flow comes first", bool(r.get("groups")) and r["groups"][0]["cls"] == "enforced")
+
+
 def check_session_end():
     """Does the session-end auto-commit take ONLY the record?
 
@@ -1824,7 +1851,7 @@ def main():
                         (check_parity, ()), (check_parity_rules, ()), (check_guard, ()), (check_loopguard, ()),
                         (check_cards, ()), (check_seat_limits, ()), (check_memory, ()), (check_memslice, ()),
                         (check_memlife, ()), (check_fact_review, ()), (check_launcher, ()),
-                        (check_board_digest, ()), (check_session_end, ()), (check_scrubber, ()),
+                        (check_board_digest, ()), (check_dashboard, ()), (check_session_end, ()), (check_scrubber, ()),
                         (check_prepush, ())):
         run(check, *args)
     if "--live" in sys.argv:

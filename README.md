@@ -26,6 +26,117 @@ Built on [Claude Code](https://claude.com/claude-code). Works with any git proje
 | **Teammates** | UI, backend and security-audit agents. Each runs one task card in its own git worktree, with a time and tool budget. |
 | **Guardrails** | Git and Claude Code hooks: no unreviewed product code on your main branches, teammates edit only the files their card names, and an agent that keeps hitting the same wall stops and asks you. |
 | **Proof, not promises** | A card is "done" only when its acceptance commands pass. The runner executes them; the agent's own report doesn't count. |
+| **A dashboard** | A local page with the board, branches, team, rules and every guard block, live from your repository. |
+
+---
+
+## How it works
+
+```mermaid
+flowchart TB
+    you(["You"]) -->|"plain language"| cto["<b>CTO</b><br/>your Claude Code session<br/>(safety checks run first)"]
+    cto -->|"writes"| card["<b>Task card</b><br/>one goal, the files it may change,<br/>steps, acceptance commands"]
+    card --> runner{{"<b>Runner</b><br/>seat.py run --card"}}
+    runner -->|"new worktree and branch,<br/>time and tool budget"| seat["<b>Teammate</b><br/>a separate Claude Code process<br/>with its own permissions"]
+    seat -->|"edits files: hooks allow<br/>only the card's files"| runner
+    runner -->|"checked facts: diff in scope, acceptance passed,<br/>cost, a commit on the branch"| cto
+    cto -->|"re-checks one claim, merges"| dev[("development")]
+    dev -->|"promotion: pre-push hook<br/>and independent review"| main[("main")]
+```
+
+1. **You** describe the work. The **CTO** decides whether to do it itself or delegate it.
+2. Delegated work becomes a **task card**: what must be true afterwards, the exact files that may
+   change, and commands that prove it. A card that is too big is refused and split.
+3. The **runner** starts a teammate in a fresh git worktree, enforces its budget, and stops it if
+   it stalls. Hooks refuse any edit outside the card's files while it works.
+4. The runner, not the teammate, decides the result: it checks the git diff against the card and
+   **executes the acceptance commands**. Only then does it commit to the card's branch.
+5. The CTO re-checks one key claim, merges into `development`, and promotion to `main` passes the
+   pre-push hook and, for changes to auth or spend, an independent read-only audit.
+
+Every rule here exists because something broke: read [the failure catalogue](docs/07-FAILURE-CATALOGUE.md)
+for the nine recurring ways agent work went wrong, and how each one is now caught.
+
+---
+
+## How is this different from Claude Code's subagents?
+
+Claude Code's [subagents](https://code.claude.com/docs/en/sub-agents) are great for work inside your
+session: research, a review, a focused change you will look at yourself. A teammate here is built
+for changes to your product that must be **proven and reviewed before they land**.
+
+```mermaid
+flowchart LR
+    subgraph A["Claude Code subagent"]
+        direction TB
+        a1["Your session"] -->|"a prompt"| a2["Subagent<br/>runs inside your session,<br/>under its permission rules"]
+        a2 -->|"a summary of what it did"| a1
+    end
+    subgraph B["AI-teammates teammate"]
+        direction TB
+        b1["CTO session"] -->|"a task card"| b2{{"Runner"}}
+        b2 -->|"starts it, budgets it,<br/>can stop it"| b3["Teammate<br/>own process, own worktree,<br/>own permission set"]
+        b3 -->|"changed files"| b2
+        b2 -->|"checked facts and<br/>a commit on a branch"| b1
+    end
+    A ~~~ B
+```
+
+| | Claude Code subagent | AI-teammates teammate |
+|---|---|---|
+| **It is given** | a prompt | a task card: one goal, the files it may change, steps, acceptance commands (refused if too big) |
+| **It runs** | inside your session, with your session's permission rules | as a separate `claude -p` process with its own allowlist, prompts denied, and none of your plugins or MCP servers |
+| **It may change** | whatever its tools and your permissions allow | only the card's files: refused live by a hook, checked again from the git diff |
+| **Where** | your checkout, or an optional temporary worktree | always its own worktree and branch, cut from `development` |
+| **"Done" means** | its summary says so | the runner executed the acceptance commands and they passed |
+| **Limits** | a turn limit (`maxTurns`) | wall time, tool calls and idle time; the process is stopped past them |
+| **Blocked on you** | asks through your session's permission prompts | stops, records `BLOCKED: <what it needs>`, and the next `cto` session starts with it |
+| **Record** | the session transcript | every run: status, files, acceptance results, cost; its board card moves |
+| **Reaches `main`** | however you commit it | only by merge through `development`, past the pre-push hook |
+
+---
+
+## The dashboard
+
+A local page that shows your project as the guardrails see it, computed live from git, the board,
+the teammate specs, your config and the hooks' event log:
+
+```bash
+python3 .ai-teammates/hooks/dashboard_server.py     # then open http://127.0.0.1:8899
+```
+
+![The dashboard's Board tab: task cards in todo, doing, review and done, each with the runner's facts](docs/images/dashboard-board.png)
+
+| Tab | What it shows |
+|---|---|
+| **Board** | Every task card by column, with the facts of its last run: files, acceptance results, time, cost, branch. |
+| **Branches** | Worktrees and branches, what each has that `main` doesn't, and where you are. Computed per request, never cached. |
+| **Team** | You, the CTO and each teammate: model, where it runs, its last run, its open cards. |
+| **Rules & Guardrails** | The branch flow the hooks enforce and the team, generated from your config, plus your own `RULES.md`. |
+| **Activity** | Every tool call, and every **BLOCKED** and **OVERRIDE** from the hooks, newest first. |
+
+The header always shows the current branch, how many branches and worktrees exist, uncommitted
+files, and whether memory capture is actually working.
+
+<details>
+<summary><b>Screenshots of the other tabs</b></summary>
+
+**Branches**
+![Branches tab: three worktrees with "you are here" on development, and five branches with unmerged counts](docs/images/dashboard-git.png)
+
+**Team**
+![Team tab: the owner, the CTO on Opus 5.5, and three teammates with their models and last runs](docs/images/dashboard-team.png)
+
+**Rules & Guardrails**
+![Rules tab: the enforced branch flow, the team, and the project's own deploy and data rules](docs/images/dashboard-rules.png)
+
+**Activity**
+![Activity tab: tool calls by the CTO and teammates, with BLOCKED card-scope, flow-direction and seat-deny events and one announced override](docs/images/dashboard-activity.png)
+
+</details>
+
+The screenshots come from an invented demo project. Rebuild them, or try the dashboard without
+installing anything into a real project: `python3 scripts/dashboard_demo.py`.
 
 ---
 
@@ -133,22 +244,6 @@ in from your repository; check it before real work:
 
 Project rules the CTO must always follow go in `.ai-teammates/RULES.md` (the installer never
 overwrites it). All other keys are described in the docs below.
-
----
-
-## How it works
-
-```
-you ──> cto (Claude Code) ──> writes a task card ──> seat.py runs a teammate in its own worktree
-          ^                                                   |
-          |                                                   v
-          └── reviews the facts <── runner: diff in scope? acceptance commands pass? commit
-```
-
-Every rule in this repo exists because something broke. The guardrails **execute** rather
-than describe: the test suite pushes a real commit through the pre-push hook and checks it
-is refused. Read [the failure catalogue](docs/07-FAILURE-CATALOGUE.md) for the nine
-recurring ways agent work has gone wrong, and how each is caught.
 
 ---
 

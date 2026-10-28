@@ -94,18 +94,24 @@ answer actually lives.
 ## The dashboard
 
 ```bash
-python3 .ai-teammates/hooks/dashboard_server.py
+python3 .ai-teammates/hooks/dashboard_server.py      # http://127.0.0.1:8899; add a port number for another
 ```
 
-A local server for a dashboard UI. **Core ships the data endpoints, not the
-UI** — point `dashboard_dir` in `config.json` at your page (default
-`.ai-teammates/`). Bound to 127.0.0.1.
+A local page with five tabs (Board, Branches, Team, Rules & Guardrails, Activity), served on
+127.0.0.1 only. The page ships in `.ai-teammates/dashboard/` and is upgraded with the hooks. To
+use your own page instead, point `dashboard_dir` in `config.json` at its folder. `#team`,
+`#rules` and so on in the address open that tab.
 
 | Endpoint | Serves |
 |---|---|
-| `/git.json` | Branches, worktrees, ahead/behind, dirty files — computed per request, never cached |
-| `/board.json` | The canonical `.ai-teammates/board.json` |
-| `/events.jsonl` | Live agent activity from the hooks |
+| `/git.json` | Branches, worktrees, ahead/behind, dirty files: computed per request, never cached |
+| `/board.json` | `.ai-teammates/board.json`, with the team roster generated from the agent specs |
+| `/team.json`, `/rules.json` | Generated from the agent specs, `config.json` and `RULES.md`: the sources the hooks enforce from |
+| `/health.json` | Whether memory capture is working, and how old the board is |
+| `/events.jsonl` | Every tool call, block and override the hooks logged |
+
+Try it without a real project: `python3 scripts/dashboard_demo.py` in the AI-teammates checkout
+builds an invented one and serves it on port 8790.
 
 The line worth putting in any UI header — `main · 4 branches · 4 worktrees · 2
 dirty` — is the fastest way to catch drift. If it says dirty and you did not
