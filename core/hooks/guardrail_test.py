@@ -616,6 +616,52 @@ def check_guard():
         expect("CONTROL: with no delegation key, a CTO edit in a feature worktree is allowed as before",
                edit(feat / "src" / "a.ts") == "allow")
 
+        # FRAMEWORK SOURCE: a project's agents do not change AI-teammates itself. FOUND 2026-10-29: the
+        # pilot project's CTO, asked to fix a failing setup check, edited the framework's test in its
+        # project copy, then read the framework repository's AGENTS.md and set out to branch and open a
+        # pull request there. The owner: framework work is not the project CTO's job. It reports instead.
+        fw = Path(td) / "fw"
+        for f in ("install.sh", "bin/cto", "core/hooks/guard.py", "README.md"):
+            (fw / f).parent.mkdir(parents=True, exist_ok=True)
+            (fw / f).write_text("x\n")
+        sh("init", "-q", "-b", "main", cwd=fw)
+        sh("add", "-A", cwd=fw)
+        sh("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "i", cwd=fw)
+        sh("checkout", "-q", "-b", "fix/y", cwd=fw)        # not a protected branch: the flow rule is not why
+        fwq = shlex.quote(str(fw))
+        cases = [
+            ("an Edit to a framework file", edit(fw / "core" / "hooks" / "guard.py"), "block"),
+            ("a Write of a new framework file", judge("Write", {"file_path": str(fw / "docs" / "x.md"), "content": "x"}),
+             "block"),
+            ("a branch in the framework repo (cd)", bash(f"cd {fwq} && git checkout -b fix/x"), "block"),
+            ("a worktree of the framework repo (git -C)", bash(f"git -C {fwq} worktree add ../fw-x -b fix/x origin/main"),
+             "block"),
+            ("a commit in the framework repo", bash(f"cd {fwq} && git status && git commit -am fix"), "block"),
+            ("a pull request from the framework repo", bash(f"cd {fwq} && gh pr create --fill"), "block"),
+            ("sed -i on a framework file", bash(f"sed -i '' s/x/y/ {fwq}/core/hooks/guard.py"), "block"),
+            ("a redirect into a framework file", bash(f"echo y >> {fwq}/README.md"), "block"),
+            ("a copy into the framework", bash(f"cp notes.md {fwq}/core/hooks/"), "block"),
+            ("CONTROL: reading the framework source", bash(f"cat {fwq}/core/hooks/guard.py"), "allow"),
+            ("CONTROL: comparing it with the project copy", bash(f"diff {fwq}/core/hooks/guard.py .ai-teammates/config.json"),
+             "allow"),
+            ("CONTROL: git status, log and fetch there", bash(f"cd {fwq} && git status && git log --oneline -3; "
+                                                              f"git -C {fwq} fetch -q origin"), "allow"),
+            ("CONTROL: looking at a pull request there", bash(f"cd {fwq} && gh pr view 10"), "allow"),
+            ("CONTROL: a redirect elsewhere while in it", bash(f"cd {fwq} && ls > /tmp/fw-listing.txt"), "allow"),
+            ("CONTROL: copying a framework file out to /tmp", bash(f"cp {fwq}/README.md /tmp/fw-readme.txt"), "allow"),
+        ]
+        for desc, got, want in cases:
+            (ok if got == want else bad)(f"guard: framework source: {desc} -> {got}"
+                                         + ("" if got == want else f", expected {want}"))
+        q = subprocess.run([sys.executable, str(script)], cwd=dev_wt, env={**env, "CLAUDE_AGENT_NAME": "cto"},
+                           input=json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(fw / "README.md")}}),
+                           capture_output=True, text=True)
+        expect = lambda desc, cond: (ok if cond else bad)(f"guard: framework source: {desc}")
+        expect("...and the block says to report it to the owner", "owner" in q.stderr and "report" in q.stderr.lower())
+        q = subprocess.run([sys.executable, str(script)], cwd=fw, env=env, capture_output=True, text=True,
+                           input=json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(fw / "README.md")}}))
+        expect("CONTROL: a session working IN the framework repository edits it freely", q.returncode == 0)
+
 
 def check_loopguard():
     """Does the stop-and-ask guard trip on a human-only loop, and ONLY on that?

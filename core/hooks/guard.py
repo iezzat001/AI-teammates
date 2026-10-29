@@ -53,6 +53,7 @@ def log(kind, detail):
 
 
 SESSION_ID = ""      # set from the hook payload in main(); loopguard keys its counters on it
+CWD = os.getcwd()    # where the tool runs: the payload's cwd when it says
 
 
 def block(rule, message, fix):
@@ -552,6 +553,89 @@ def check_frontend_edit(tool, ti):
     )
 
 
+# --- the framework's own source ----------------------------------------------
+# FOUND 2026-10-29: the pilot project's CTO, asked to fix a failing setup check, fixed the framework's
+# test in its project copy, then read the AI-teammates repository's AGENTS.md and set out to branch and
+# open a pull request there. The owner: AI-teammates is not the project's work; its fixes are made and
+# reviewed in its own repository. A project's agents read it and run it; they report what is wrong.
+FRAMEWORK_MARKERS = ("install.sh", "bin/cto", "core/hooks/guard.py")
+COPY_VERBS = {"cp", "rsync", "install", "ditto", "scp", "ln"}       # only the destination is written
+GH_READS = {"view", "list", "status", "checks", "diff", "checkout"}  # gh pr/issue verbs that change nothing there
+
+
+def _framework_root(p):
+    """The AI-teammates source checkout p is in (the dev repository, or the stable copy `cto` runs
+    from), else None. Known by its files, not its name or remote: a fork or a clone elsewhere too."""
+    try:
+        d = Path(os.path.expanduser(str(p))).resolve()
+    except Exception:
+        return None
+    for c in (d, *d.parents):
+        if all((c / m).is_file() for m in FRAMEWORK_MARKERS):
+            return c
+    return None
+
+
+def _at(base, word):
+    return Path(base) / os.path.expanduser(word) if not os.path.isabs(os.path.expanduser(word)) \
+        else Path(os.path.expanduser(word))
+
+
+def framework_write(cmd, cwd):
+    """(what, framework root) for the first part of this shell line that would change the framework's
+    source, else None. A `cd` earlier in the line moves where the rest runs."""
+    here = Path(cwd)
+    for blank, w, raw in _parts(cmd):
+        if not w:
+            continue
+        if w[0] in ("cd", "pushd"):
+            here = _at(here, w[1]) if len(w) > 1 and not w[1].startswith("-") else Path.home()
+            continue
+        at = here
+        if w[0] == "git":                                # git -C <dir> (each one relative to the last)
+            for i, x in enumerate(raw[:-1]):
+                if x == "-C":
+                    at = _at(at, raw[i + 1])
+        root = _framework_root(at)
+        if root and w[0] == "git" and len(w) > 1 and w[1] in GIT_WRITES:
+            return "git %s in %s" % (w[1], root), root
+        if root and w[0] == "gh" and len(w) > 2 and w[1] in ("pr", "issue", "release", "repo") \
+                and w[2] not in GH_READS:
+            return "gh %s %s from %s" % (w[1], w[2], root), root
+        if w[0] in OPAQUE or not _write_reason(blank, w):
+            continue                                     # running the framework's scripts is using it
+        targets = [m.group(1) for m in re.finditer(r">>?\|?\s*(\S+)", blank)]
+        if _write_reason("", w):                         # the command itself writes, not only a redirect
+            args = [x for x in w[1:] if not x.startswith("-") and not re.match(r"^\d*[<>]", x)]
+            targets += args[-1:] if w[0] in COPY_VERBS else args
+        for t in targets:
+            root = _framework_root(_at(here, t))
+            if root:
+                return "%s (%s)" % (t, _write_reason(blank, w)), root
+    return None
+
+
+def check_framework_source(tool, ti):
+    if _framework_root(REPO):
+        return                                           # a session working ON the framework
+    if tool in ("Edit", "Write", "NotebookEdit", "MultiEdit"):
+        f = str(ti.get("file_path") or ti.get("path") or ti.get("notebook_path") or "")
+        root = _framework_root(_at(CWD, f)) if f else None
+        hit = (f, root) if root else None
+    elif tool == "Bash":
+        hit = framework_write(str(ti.get("command") or ""), CWD)
+    else:
+        return
+    if hit:
+        block("framework-source",
+              "This would change the AI-teammates source itself: %s. The framework is not this project's "
+              "work; its fixes are made and reviewed in its own repository, by the owner." % hit[0],
+              "Report it to the owner and stop: the framework file, the check or behaviour that is wrong, "
+              "the evidence, and the fix you propose. Reading the framework source and running its scripts "
+              "is fine. A workaround in this project's own .ai-teammates/ copy is the owner's call (the "
+              "guard asks), and the next upgrade replaces it.")
+
+
 def _product_file(p):
     """(checkout, path) when p is a product file (guarded, not edit_exempt) of this repository, else None."""
     try:
@@ -842,16 +926,17 @@ def check_git(tool, ti):
 
 
 HANDLERS = (check_blocked_gate, check_card_scope, check_card_shell, check_seat_denies,
-            check_guardrail_files, check_frontend_edit, check_delegation, check_git)
+            check_framework_source, check_guardrail_files, check_frontend_edit, check_delegation, check_git)
 
 
 def main():
-    global SESSION_ID
+    global SESSION_ID, CWD
     try:
         payload = json.load(sys.stdin)
     except Exception:
         sys.exit(0)  # never break the session on a malformed payload
     SESSION_ID = payload.get("session_id") or ""
+    CWD = payload.get("cwd") or CWD
 
     tool = payload.get("tool_name") or payload.get("tool") or ""
     ti = payload.get("tool_input") or {}

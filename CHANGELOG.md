@@ -13,6 +13,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `guard.py` blocks a project's agents from changing AI-teammates itself (`framework-source`): no
+  edit or write into a source checkout, no git write in it, no `gh` pull request or issue from it.
+  Reading it and running its scripts stay allowed, and a session in the framework repository is
+  not affected. `cto.md` says a framework bug is reported to the owner.
 - The dashboard page now ships with AI-teammates (`.ai-teammates/dashboard/`): Board, Branches,
   Team, Rules & Guardrails and Activity, with `#tab` links. The server used to provide only the
   data, and its default folder exposed `config.json`.
