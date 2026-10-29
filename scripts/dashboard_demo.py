@@ -27,7 +27,7 @@ DEV = ROOT / "acme-notes-dev"
 CARD_WT = ROOT / "acme-notes-card-ui-7"
 HOME = ROOT / "home"
 PORT = int(os.environ.get("DEMO_PORT", 8790))   # not 8899: that is where your own project's dashboard runs
-TABS = ["board", "git", "team", "rules", "activity"]
+TABS = ["overview", "board", "git", "team", "rules", "activity"]
 NOW = datetime.now(timezone.utc)
 
 
@@ -175,6 +175,20 @@ def build():
            reason="hotfix: share links 500 in production, owner approved in session"),
         ev(1, "backend", tool="Bash", target="npm test -- share", ok=True),
     ]
+    # a working day of background tool calls before the scripted events above, so the Activity chart
+    # and the team sparklines have a shape: bursts while a seat works, quiet between
+    import math
+    day = []
+    for k in range(9 * 4, 0, -1):                       # every 15 minutes over the last 9 hours
+        m = k * 15 + 50
+        burst = max(0, math.sin(k / 3.1) * 4 + math.sin(k / 1.7) * 2 + 2.5)
+        for j in range(int(burst)):
+            who = ["cto", "ui-developer", "backend", "security-audit"][(k + j) % 4 if k % 5 else 0]
+            day.append(ev(m - j * 2, who, tool=["Read", "Edit", "Bash", "Grep"][j % 4], target="src/", ok=True))
+    day += [ev(420, "ui-developer", "blocked", rule="card-scope", message="src/app.css is outside this card's scope."),
+            ev(300, "cto", "ask", rule="guardrail-files", message=".ai-teammates/config.json holds the guardrail settings"),
+            ev(185, "backend", "blocked", rule="seat-deny", message="A seat never runs 'ssh*' (config.json required_denies).")]
+    events = sorted(day + events, key=lambda e: e["ts"])
     (state / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     runs = [{"ts": iso(44), "agent": "ui-developer", "seat": "UI Developer", "exit": 0, "tool_calls": 23,
              "card": "UI-7", "status": "done", "seconds": 41, "cost_usd": 0.031},
@@ -219,15 +233,15 @@ def shots(out: Path):
     browser = chrome()
     # (width, height) per tab: the content's measured size at that width plus a margin, so an image
     # carries no empty page. Re-measure if the demo data or the page layout changes.
-    sizes = {"board": (1360, 695), "git": (1040, 535), "team": (1040, 520), "rules": (1040, 790),
-             "activity": (1040, 722)}
+    sizes = {"overview": (1360, 1072), "board": (1360, 765), "git": (1040, 630), "team": (1040, 548),
+             "rules": (1040, 836), "activity": (1040, 760)}   # activity: the newest rows; the table runs on
     for tab in TABS:
         f = out / f"dashboard-{tab}.png"
         prof = ROOT / "chrome-profile"
         subprocess.run([browser, "--headless=new", "--disable-gpu", "--hide-scrollbars", "--no-first-run",
                         f"--user-data-dir={prof}", "--force-device-scale-factor=1.5",
                         "--window-size=%d,%d" % sizes[tab], "--virtual-time-budget=6000",
-                        f"--screenshot={f}", f"http://127.0.0.1:{PORT}/#{tab}"],
+                        f"--screenshot={f}", f"http://127.0.0.1:{PORT}/?still#{tab}"],
                        capture_output=True, text=True, timeout=120)
         print(f"  {'wrote' if f.exists() else 'FAILED'} {f}")
 

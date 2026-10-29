@@ -3,282 +3,532 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="dark" />
 <title>AI-teammates</title>
 <!-- Served by .ai-teammates/hooks/dashboard_server.py, which computes every panel's data live from
      the same sources the guardrails read (git, board.json, the agent specs, config.json, the event
-     log). No external requests: it runs on localhost and shows your project's state. -->
+     log). It makes no external requests: no fonts, scripts or images from anywhere else.
+     The look - a dark bento grid, glowing gradient tiles, one lime accent, dot-matrix numerals and
+     tick-mark gauges - is inspired by the "Finance Bento" design by vasnev.art; the code is our own. -->
 <style>
   :root{
-    --fg:#1A1A1A; --muted:rgba(26,26,26,.52);
-    --core:#D8482A; --gold:#C97A1B; --halo:#6BB6FF; --ok:#2E8B57;
-    --border:rgba(26,26,26,.13); --card:rgba(255,255,255,.72);
-    --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-    --sans:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --bg:#000; --acc:#E8FF1F; --t1:#fff; --t2:rgba(255,255,255,.58); --t3:rgba(255,255,255,.38);
+    --hair:rgba(255,255,255,.12); --glass:rgba(255,255,255,.06); --ease:cubic-bezier(.32,.72,0,1);
+    --bad:#FF5C7A; --sans:Geist,Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --mono:"Geist Mono","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   }
   *{box-sizing:border-box}
-  body{margin:0;padding:26px 30px 60px;font-family:var(--sans);color:var(--fg);
-       background:linear-gradient(135deg,#FFF8F0,#FFEFE0 45%,#FFF3E8);
-       min-height:100vh;font-size:14px}
-  header{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:18px}
-  h1{font-family:var(--mono);font-size:.95rem;letter-spacing:.16em;
-     text-transform:uppercase;margin:0}
-  .meta{color:var(--muted);font-size:.76rem}
-  .live{display:inline-block;width:7px;height:7px;border-radius:50%;
-        background:var(--ok);margin-right:6px;animation:p 2.4s infinite}
-  @keyframes p{0%,100%{opacity:1}50%{opacity:.25}}
+  html,body{background:var(--bg)}
+  body{margin:0;padding:22px 26px 48px;font-family:var(--sans);color:var(--t1);font-size:14px;
+       -webkit-font-smoothing:antialiased;min-height:100vh}
+  .wrap{max-width:1360px;margin:0 auto}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .muted{color:var(--t3);font-size:12.5px;font-weight:500}
+  code{font-family:var(--mono);font-size:.86em;background:rgba(255,255,255,.08);padding:1px 6px;border-radius:6px}
 
-  nav{display:flex;gap:6px;margin-bottom:20px;flex-wrap:wrap}
-  nav button{font-family:var(--mono);font-size:.72rem;letter-spacing:.09em;
-    text-transform:uppercase;padding:8px 15px;border-radius:999px;cursor:pointer;
-    border:1px solid var(--border);background:rgba(255,255,255,.5);color:var(--fg);
-    transition:.15s}
-  nav button:hover{border-color:var(--core)}
-  nav button.on{background:var(--core);border-color:var(--core);color:#fff}
+  /* ---- header ---- */
+  .top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+  .top h1{margin:0;font-size:28px;font-weight:700;letter-spacing:-.03em;flex:1;min-width:220px}
+  .top h1 small{display:inline-block;font-size:14px;font-weight:500;color:var(--t3);letter-spacing:-.01em;margin-left:12px}
+  .live{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--acc);margin-right:7px;vertical-align:1px;animation:pulse 2.4s infinite}
+  @keyframes pulse{50%{opacity:.25}}
+  .chips{display:flex;gap:8px;flex-wrap:wrap}
+  .chip{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 12px;border-radius:15px;
+        background:var(--glass);border:1px solid var(--hair);font:500 12px var(--mono);color:var(--t2);white-space:nowrap}
+  .chip b{color:var(--t1);font-weight:600}
+  .chip i{width:7px;height:7px;border-radius:50%;background:var(--acc)}
+  .chip.warn{color:var(--acc);border-color:rgba(232,255,31,.35)}
+  .chip.bad i{background:var(--bad)} .chip.bad{color:#ffb3c1;border-color:rgba(255,92,122,.4)}
+  .seg{display:flex;padding:3px;gap:2px;border-radius:15px;background:rgba(255,255,255,.08);border:1px solid var(--hair);flex-wrap:wrap}
+  .seg button{border:0;height:30px;padding:0 13px;border-radius:12px;background:transparent;color:var(--t2);
+              font:600 12.5px var(--sans);cursor:pointer;transition:background .25s,color .25s}
+  .seg button[aria-pressed="true"]{background:#fff;color:#0b0b0c}
+  .seg button:focus-visible{outline:2px solid var(--acc);outline-offset:2px}
+  .navrow{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
 
+  /* ---- bento ---- */
   .panel{display:none} .panel.on{display:block}
+  .grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:14px}
+  .card{position:relative;border-radius:28px;overflow:hidden;opacity:0;transform:translateY(14px) scale(.985);
+        transition:opacity .7s ease,transform .9s var(--ease)}
+  .in .card{opacity:1;transform:none}
+  .card .g{position:absolute;inset:0}
+  .card .core{position:absolute;left:10%;right:10%;top:16%;bottom:-6%;border-radius:90px;filter:blur(60px)}
+  .card .rim{position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:9;
+             box-shadow:inset 0 1px 0 rgba(255,255,255,.2),inset 0 0 0 1px rgba(255,255,255,.06)}
+  .card .in-c{position:absolute;inset:0;padding:22px 24px;z-index:2}
+  .glass{background:var(--glass);border:1px solid var(--hair)}
+  .solid{background:var(--acc);color:#0b0b0c}
+  .solid .cap,.solid .muted{color:rgba(0,0,0,.58)}
+  .h1{height:376px} .h2{height:172px} .h3{height:336px}
+  #ov-work{grid-column:span 8} #ov-hold{grid-column:span 4} .kpi{grid-column:span 3}
+  #ov-pulse{grid-column:span 5} #ov-crew{grid-column:span 4} #ov-br{grid-column:span 3}
+  .tone-blue .g{background:linear-gradient(180deg,#b9a6ff 0%,#2e43ff 36%,#2e43ff 74%,#6d7dff 100%)} .tone-blue .core{background:#05082a}
+  .tone-graph .g{background:linear-gradient(180deg,#9a9aa8 0%,#3a3a44 36%,#3a3a44 74%,#55555f 100%)} .tone-graph .core{background:#060608}
+  .tone-pink .g{background:linear-gradient(180deg,#ff94c4 0%,#ff2a85 36%,#ff2a85 74%,#ff6aa8 100%)} .tone-pink .core{background:#3a031c}
+  .tone-copper .g{background:linear-gradient(180deg,#d98e60 0%,#c2683a 36%,#c2683a 74%,#dc8a5c 100%)} .tone-copper .core{background:#1d0b05}
+  .tone-green .g{background:linear-gradient(180deg,#6cc49c 0%,#36956f 36%,#36956f 74%,#58b58c 100%)} .tone-green .core{background:#061d15}
+  .ttl{font-size:18px;font-weight:600;letter-spacing:-.02em}
+  [class*="tone-"] .ttl{text-shadow:0 1px 14px rgba(0,0,0,.28)}
+  [class*="tone-"] .muted{color:rgba(255,255,255,.74)}
+  .cap{font-size:11.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--t2)}
+  .big{font-size:40px;font-weight:200;letter-spacing:-.04em;line-height:1;font-variant-numeric:tabular-nums}
+  .row{display:flex;align-items:center;gap:12px}
+  .sp{justify-content:space-between}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;font-weight:500;color:var(--t2)}
+  .legend span{display:inline-flex;align-items:center;gap:6px}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none;display:inline-block}
+  .pill{display:inline-flex;align-items:center;height:22px;padding:0 9px;border-radius:11px;background:rgba(0,0,0,.6);
+        color:#fff;font:600 11px var(--mono);white-space:nowrap}
+  .solid .pill{background:rgba(0,0,0,.85)}
+  .ellip{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .dots circle{transition:opacity .26s,transform .26s;transform-box:fill-box;transform-origin:center}
+  .tip{position:fixed;z-index:50;pointer-events:none;background:rgba(14,14,16,.94);color:#fff;border:1px solid var(--hair);
+       border-radius:14px;padding:9px 11px;font-size:12px;backdrop-filter:blur(16px);box-shadow:0 12px 30px -10px rgba(0,0,0,.6);
+       opacity:0;transform:translateY(4px);transition:opacity .15s,transform .15s;white-space:nowrap;min-width:150px}
+  .tip.on{opacity:1;transform:none}
+  .tip .t{color:var(--t2);margin-bottom:5px;font-weight:500}
+  .tip .r{display:flex;justify-content:space-between;gap:14px;align-items:center;line-height:19px}
+  .tip .r span{display:inline-flex;align-items:center;gap:6px;color:var(--t2)}
+  .tip b{font:500 12px var(--mono)}
 
-  /* board */
-  .board{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;align-items:start}
-  .col{background:rgba(255,255,255,.4);border:1px solid var(--border);
-       border-radius:14px;padding:12px;min-height:120px}
-  .col h2{font-family:var(--mono);font-size:.68rem;letter-spacing:.12em;
-     text-transform:uppercase;color:var(--muted);margin:0 0 12px;
-     display:flex;justify-content:space-between}
-  .card{background:var(--card);border:1px solid var(--border);border-left:3px solid var(--core);
-        border-radius:11px;padding:11px 12px;margin-bottom:10px}
-  .card:last-child{margin-bottom:0}
-  .card .id{font-family:var(--mono);font-size:.6rem;letter-spacing:.1em;color:var(--muted)}
-  .card .ttl{font-weight:600;margin:3px 0 6px;line-height:1.35;font-size:.87rem}
-  .card .note{color:var(--muted);font-size:.77rem;line-height:1.55}
-  .who{display:inline-flex;align-items:center;gap:5px;font-family:var(--mono);
-       font-size:.64rem;padding:2px 8px;border-radius:999px;border:1px solid var(--border);
-       margin-top:8px}
-  .dot{width:6px;height:6px;border-radius:50%;flex:none}
-
-  /* team */
-  .org{display:flex;flex-direction:column;gap:12px;max-width:820px}
-  .node{background:var(--card);border:1px solid var(--border);border-radius:13px;
-        padding:13px 15px;display:flex;gap:13px;align-items:flex-start}
-  .node .nm{font-family:var(--mono);font-size:.8rem;font-weight:500}
-  .node .rl{color:var(--muted);font-size:.8rem;margin-top:3px;line-height:1.5}
-  .node .load{margin-left:auto;font-family:var(--mono);font-size:.66rem;
-               color:var(--muted);white-space:nowrap}
-
-  /* rules */
-  .rules{max-width:880px}
-  .rule{background:var(--card);border:1px solid var(--border);border-radius:13px;
-        padding:14px 16px;margin-bottom:11px}
-  .rule h3{font-family:var(--mono);font-size:.72rem;letter-spacing:.09em;
-     text-transform:uppercase;margin:0 0 9px;color:var(--core)}
-  .rule ul{margin:0;padding-left:17px} .rule li{margin:5px 0;line-height:1.6}
-  .rule code, td code{font-family:var(--mono);font-size:.8rem;background:rgba(26,26,26,.06);
-             padding:1px 5px;border-radius:4px}
-  .warn{border-left:3px solid var(--gold)}
-  .enforced{border-left:3px solid var(--ok)}
-
-  /* tables: branches, activity */
-  table{width:100%;border-collapse:collapse;background:var(--card);
-        border:1px solid var(--border);border-radius:13px;overflow:hidden}
-  th{font-family:var(--mono);font-size:.6rem;letter-spacing:.11em;text-transform:uppercase;
-     color:var(--muted);text-align:left;padding:9px 12px;border-bottom:1px solid var(--border)}
-  td{padding:8px 12px;font-size:.81rem;border-bottom:1px solid rgba(26,26,26,.05)}
+  /* ---- detail tabs ---- */
+  .board{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;align-items:start}
+  .col{background:var(--glass);border:1px solid var(--hair);border-radius:24px;padding:14px;min-height:120px}
+  .col h2{margin:2px 4px 12px;display:flex;justify-content:space-between;align-items:center}
+  .tcard{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.09);border-radius:16px;padding:12px 13px;margin-bottom:10px;position:relative}
+  .tcard:last-child{margin-bottom:0}
+  .tcard .bar{position:absolute;left:0;top:14px;bottom:14px;width:3px;border-radius:0 3px 3px 0}
+  .tcard .id{font:600 11px var(--mono);color:var(--t3);letter-spacing:.02em}
+  .tcard .tt{font-weight:600;margin:4px 0 6px;line-height:1.35;font-size:14px}
+  .tcard .nt{color:var(--t2);font-size:12.5px;line-height:1.55;overflow-wrap:anywhere}
+  .who{display:inline-flex;align-items:center;gap:6px;margin-top:9px;height:22px;padding:0 9px;border-radius:11px;
+       background:rgba(255,255,255,.07);font:500 11px var(--mono);color:var(--t2)}
+  .sheet{background:var(--glass);border:1px solid var(--hair);border-radius:24px;padding:18px 20px;margin-bottom:14px}
+  .sheet h3{margin:0 0 10px;font-size:13px;font-weight:600;letter-spacing:.02em;display:flex;gap:8px;align-items:baseline}
+  table{width:100%;border-collapse:collapse}
+  th{font:600 10.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--t3);text-align:left;padding:8px 10px;border-bottom:1px solid var(--hair)}
+  td{padding:9px 10px;font-size:13px;border-bottom:1px solid rgba(255,255,255,.06);vertical-align:top}
   tr:last-child td{border-bottom:none}
-  .t{font-family:var(--mono);font-size:.7rem;color:var(--muted);white-space:nowrap}
-  .blocked{color:var(--core);font-weight:600}
-  .override{color:var(--gold);font-weight:600}
-  .empty{padding:30px;text-align:center;color:var(--muted)}
-  .gitnow{font-family:var(--mono);font-size:.72rem;padding:3px 9px;border-radius:999px;
-    border:1px solid var(--border);background:rgba(255,255,255,.5);margin-left:10px}
-  .memstale{border-color:var(--gold);color:var(--gold);background:rgba(201,122,27,.10)}
-  #gitBody h3{font-family:var(--mono);font-size:.8rem;margin:0 0 8px;font-weight:600}
-  @media(max-width:1000px){.board{grid-template-columns:repeat(2,1fr)}}
+  .t{font:500 12px var(--mono);color:var(--t3);white-space:nowrap}
+  .acc{color:var(--acc);font-weight:600}
+  .blk{color:var(--bad);font-weight:600}
+  .rules .sheet.enforced{border-left:3px solid var(--acc)}
+  .rules h4{margin:0 0 10px;font:600 11.5px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--acc)}
+  .rules ul{margin:0;padding-left:18px} .rules li{margin:6px 0;line-height:1.6;color:rgba(255,255,255,.86)}
+  .org{display:flex;flex-direction:column;gap:10px;max-width:880px}
+  .node{background:var(--glass);border:1px solid var(--hair);border-radius:20px;padding:14px 16px;display:flex;gap:13px;align-items:flex-start}
+  .node .nm{font-weight:600;font-size:14.5px}
+  .node .rl{color:var(--t2);font-size:12.5px;margin-top:4px;line-height:1.5}
+  .node .ld{margin-left:auto;font:500 11.5px var(--mono);color:var(--t3);white-space:nowrap}
+  .empty{padding:30px;text-align:center;color:var(--t3)}
+
+  @media (max-width:1199px){#ov-work{grid-column:span 12} #ov-hold{grid-column:span 6;grid-row:span 2;height:auto;min-height:376px}
+    .kpi{grid-column:span 6} #ov-pulse{grid-column:span 12} #ov-crew,#ov-br{grid-column:span 6}
+    .board{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media (max-width:767px){body{padding:16px 12px}.top h1 small{display:block;margin:4px 0 0}
+    #ov-hold{grid-column:span 12;grid-row:auto} .kpi{grid-column:span 6} #ov-crew,#ov-br{grid-column:span 12}
+    .grid{gap:12px} .board{grid-template-columns:1fr}}
+  @media (max-width:520px){.kpi{grid-column:span 12} #ov-work .who{display:none}}
+  @media (prefers-reduced-motion: reduce){.card{transition:none}.live{animation:none}}
+  .still .card,.still .dots circle,.still .seg button{transition:none!important}.still .live{animation:none}
 </style>
 </head>
 <body>
-<header>
-  <h1 id="title">AI-teammates</h1>
-  <span class="meta">
-    <span class="live"></span><span id="status">loading…</span>
-    <!-- Always visible, every tab: which branch is under you right now. -->
-    <span id="gitNow" class="gitnow" title="current branch / branches / worktrees">—</span>
-    <span id="memHealth" class="gitnow" title="memory freshness">memory: …</span>
-  </span>
-</header>
+<div class="wrap">
+  <header class="top">
+    <h1><span id="title">AI-teammates</span><small><span class="live"></span><span id="status">loading…</span></small></h1>
+    <div class="chips"><span class="chip" id="gitNow" title="current branch · branches · worktrees">—</span>
+      <span class="chip" id="memHealth" title="memory capture">memory …</span></div>
+  </header>
+  <div class="navrow">
+    <nav class="seg" role="group" aria-label="View">
+      <button data-p="overview" aria-pressed="true">Overview</button><button data-p="board" aria-pressed="false">Board</button>
+      <button data-p="git" aria-pressed="false">Branches</button><button data-p="team" aria-pressed="false">Team</button>
+      <button data-p="rules" aria-pressed="false">Rules &amp; Guardrails</button><button data-p="activity" aria-pressed="false">Activity</button>
+    </nav>
+    <span class="muted" id="window"></span>
+  </div>
 
-<nav>
-  <button class="on" data-p="board">Board</button>
-  <button data-p="git">Branches</button>
-  <button data-p="team">Team</button>
-  <button data-p="rules">Rules &amp; Guardrails</button>
-  <button data-p="activity">Activity</button>
-</nav>
-
-<div class="panel on" id="board"><div class="board" id="cols"></div></div>
-<div class="panel" id="git">
-  <div class="rules" id="gitBody"><div class="empty">loading git state…</div></div>
+  <div class="panel on" id="overview">
+    <div class="grid" id="grid">
+      <section class="card h1 tone-blue" id="ov-work" aria-label="Work"></section>
+      <section class="card h1 tone-graph" id="ov-hold" aria-label="Who holds the work"></section>
+      <section class="card h2 kpi solid" id="ov-blocks" aria-label="Guard blocks"></section>
+      <section class="card h2 kpi glass" id="ov-branch" aria-label="Branch"></section>
+      <section class="card h2 kpi glass" id="ov-mem" aria-label="Memory"></section>
+      <section class="card h2 kpi glass" id="ov-review" aria-label="Waiting for you"></section>
+      <section class="card h3 tone-pink" id="ov-pulse" aria-label="Activity"></section>
+      <section class="card h3 tone-copper" id="ov-crew" aria-label="Team"></section>
+      <section class="card h3 tone-green" id="ov-br" aria-label="Branches"></section>
+    </div>
+  </div>
+  <div class="panel" id="board"><div class="board" id="cols"></div></div>
+  <div class="panel" id="git"><div id="gitBody"><div class="empty">loading git state…</div></div></div>
+  <div class="panel" id="team"><div class="org" id="org"></div></div>
+  <div class="panel rules" id="rules"><div id="rulesBody"></div></div>
+  <div class="panel" id="activity"><div class="sheet"><table><thead><tr><th>When</th><th>Agent</th><th>Action</th><th>Target</th></tr></thead>
+    <tbody id="rows"><tr><td colspan="4" class="empty">No events yet.</td></tr></tbody></table></div></div>
 </div>
-<div class="panel" id="team"><div class="org" id="org"></div></div>
-<div class="panel" id="rules"><div class="rules" id="rulesBody"></div></div>
-<div class="panel" id="activity">
-  <table><thead><tr><th>When</th><th>Agent</th><th>Action</th><th>Target</th></tr></thead>
-  <tbody id="rows"><tr><td colspan="4" class="empty">No events yet.</td></tr></tbody></table>
-</div>
+<div class="tip" id="tip"></div>
 
 <script>
-const esc=s=>String(s??"").replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
-const ago=iso=>{const s=Math.max(0,(Date.now()-new Date(iso).getTime())/1000);
-  return s<60?Math.floor(s)+"s":s<3600?Math.floor(s/60)+"m":s<86400?Math.floor(s/3600)+"h":Math.floor(s/86400)+"d";};
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+// ?still: no animation at all, so a screenshot shows the finished state (scripts/dashboard_demo.py --shots)
+const still = /[?&]still(&|$)/.test(location.search);
+if (still) document.documentElement.classList.add("still");
+const reduce = still || matchMedia("(prefers-reduced-motion: reduce)").matches;
+const ease = t => 1 - Math.pow(1 - t, 3);
+const SVGNS = "http://www.w3.org/2000/svg";   // the SVG namespace name, not a request
+const ACC = "#E8FF1F", T2 = "rgba(255,255,255,.58)", T3 = "rgba(255,255,255,.38)", HAIR = "rgba(255,255,255,.14)";
+const ago = iso => { const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  return s < 60 ? Math.floor(s) + "s" : s < 3600 ? Math.floor(s / 60) + "m" : s < 86400 ? Math.floor(s / 3600) + "h" : Math.floor(s / 86400) + "d"; };
+const D = {board: null, git: null, health: null, rules: null, events: []};
+let view = "overview";
 
-// ── Tabs: #team, #rules ... in the address open that tab directly ────────
-function show(p){
-  if(!document.getElementById(p)) return;
-  document.querySelectorAll("nav button").forEach(x=>x.classList.toggle("on", x.dataset.p===p));
-  document.querySelectorAll(".panel").forEach(x=>x.classList.toggle("on", x.id===p));
+/* column colours: what needs the owner (review) carries the accent */
+const COLCOL = {todo: "rgba(255,255,255,.42)", backlog: "rgba(255,255,255,.42)", doing: "#A9B2FF", in_progress: "#A9B2FF",
+                review: ACC, blocked: "#FF5C7A", done: "#FFFFFF"};
+const colColour = id => COLCOL[id] || "rgba(255,255,255,.6)";
+const isDone = t => t.status === "done";
+
+/* ---------- tabs: #team, #rules ... open that tab; a changed #tab does not reload the page ---------- */
+function show(p) {
+  if (!document.getElementById(p)) return;
+  view = p;
+  document.querySelectorAll("nav button").forEach(b => b.setAttribute("aria-pressed", b.dataset.p === p));
+  document.querySelectorAll(".panel").forEach(x => x.classList.toggle("on", x.id === p));
+  render();
 }
-document.querySelectorAll("nav button").forEach(b=>b.onclick=()=>{ show(b.dataset.p); history.replaceState(null,"","#"+b.dataset.p); });
-if(location.hash) show(location.hash.slice(1));
-window.addEventListener("hashchange", ()=>show(location.hash.slice(1)));   // a changed #tab does not reload the page
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => { history.replaceState(null, "", "#" + b.dataset.p); show(b.dataset.p); });
+window.addEventListener("hashchange", () => show(location.hash.slice(1)));
 
-// ── Branches & worktrees ─────────────────────────────────────────────
-// /git.json is computed per request by dashboard_server.py. A file on disk
-// would go stale the moment anything is checked out, and a stale branch
-// indicator is worse than none because it gets believed.
-async function renderGit(){
-  let g; try{ g=await (await fetch("git.json?_="+Date.now())).json(); }
-  catch{
-    document.getElementById("gitNow").textContent="git: not reachable";
-    document.getElementById("gitBody").innerHTML=
-      "<div class='empty'>/git.json not reachable: start the dashboard with "
-      +"python3 .ai-teammates/hooks/dashboard_server.py</div>";
-    return;
+/* ---------- small drawing helpers ---------- */
+function smooth(P, move = true) {          // a Catmull-Rom curve through the points, as SVG path data
+  let d = (move ? "M" : "L") + `${P[0][0]},${P[0][1]}`;
+  for (let i = 0; i < P.length - 1; i++) {
+    const p0 = P[i - 1] || P[i], p1 = P[i], p2 = P[i + 1], p3 = P[i + 2] || p2, k = .18;
+    d += `C${p1[0] + (p2[0] - p0[0]) * k},${p1[1] + (p2[1] - p0[1]) * k} ${p2[0] - (p3[0] - p1[0]) * k},${p2[1] - (p3[1] - p1[1]) * k} ${p2[0]},${p2[1]}`;
   }
-  if(g.error){ document.getElementById("gitBody").innerHTML="<div class='empty'>"+esc(g.error)+"</div>"; return; }
-  const prod=esc(g.production||"main");
-
-  document.getElementById("gitNow").innerHTML=
-    "<b>"+esc(g.current)+"</b> · "+g.counts.branches+" branches"
-    +(g.counts.remoteOnly?" · <span class='override'>"+g.counts.remoteOnly+" remote-only</span>":"")
-    +" · "+g.counts.worktrees+" worktrees"
-    +(g.dirty?" · <span class='override'>"+g.dirty+" dirty</span>":"");
-
-  const wt=g.worktrees.map(w=>
-    "<tr><td class='t'>"+esc(w.name)+"</td><td>"+esc(w.branch||"(detached)")
-    +(w.branch===g.current?" <span class='blocked'>← you are here</span>":"")
-    +"</td><td class='t'>"+esc(w.path)+"</td></tr>").join("");
-
-  const br=g.branches.map(b=>{
-    const state=b.ahead===0?"<span class='t'>merged</span>"
-      :"<span class='override'>"+b.ahead+" unmerged</span>";
-    return "<tr><td>"+esc(b.name)+(b.checkedOut?" <span class='t'>[checked out]</span>":"")
-      +(b.remote?" <span class='override'>[remote only]</span>":"")
-      +"</td><td>"+state+"</td><td class='t'>"+(b.behind?b.behind+" behind "+prod:"—")
-      +"</td><td class='t'>"+esc(b.last)+"</td></tr>";
-  }).join("");
-
-  document.getElementById("gitBody").innerHTML=
-    "<h3>Worktrees <span class='t'>("+g.counts.worktrees+")</span></h3>"
-    +"<table><thead><tr><th>Folder</th><th>Branch</th><th>Path</th></tr></thead><tbody>"+wt+"</tbody></table>"
-    +"<h3 style='margin-top:22px'>Branches <span class='t'>("+g.counts.branches
-    +(g.counts.remoteOnly?" + "+g.counts.remoteOnly+" remote-only":"")
-    +") — unmerged means it has commits "+prod+" does not"
-    +(g.fetchedAt?"; remotes as of last fetch, "+Math.round((Date.now()/1000-g.fetchedAt)/60)+" min ago":"; remotes never fetched")
-    +"</span></h3>"
-    +"<table><thead><tr><th>Branch</th><th>vs "+prod+"</th><th>Behind</th><th>Last commit</th></tr></thead><tbody>"+br+"</tbody></table>"
-    +(g.dirty?"<h3 style='margin-top:22px'>Uncommitted here <span class='t'>("+g.dirty+")</span></h3><div class='t' style='padding:8px 0'>"
-      +g.dirtyFiles.map(esc).join("<br>")+"</div>":"");
+  return d;
 }
-renderGit(); setInterval(renderGit, 15000);
-
-// ── Memory health ────────────────────────────────────────────────────
-// The failure here is silence, not errors: a capture script once looked installed and
-// wrote nothing for nine days. So staleness is shown in the header where it
-// cannot be missed, not buried behind a tab.
-async function renderHealth(){
-  let h; try{ h=await (await fetch("health.json?_="+Date.now())).json(); }catch{ return; }
-  const el=document.getElementById("memHealth"); if(!el||h.error) return;
-  const bad=h.checks.filter(c=>c.stale);
-  el.className="gitnow"+(bad.length?" memstale":"");
-  el.title=h.checks.map(c=>c.check+": "+(c.why||(c.days===null?"never":c.days+"d"))).join("\n");
-  el.innerHTML = bad.length
-    ? "memory: <b>"+bad.length+" stale</b> — "+esc(bad.map(c=>c.check).join(", "))
-    : "memory: ok";
+const polar = (r, deg) => [r * Math.cos(deg * Math.PI / 180), r * Math.sin(deg * Math.PI / 180)];
+function tween(node, to, fmt, dur = 800) {
+  const from = +node.dataset.v || 0; if (from === to && node.textContent) return; node.dataset.v = to;
+  const t0 = performance.now();
+  (function f(now) { const t = reduce ? 1 : Math.min(1, (now - t0) / dur); node.textContent = fmt(from + (to - from) * ease(t)); if (t < 1) requestAnimationFrame(f); })(t0);
 }
-renderHealth(); setInterval(renderHealth, 60000);
+const tip = $("#tip");
+function showTip(x, y, title, rows) {
+  tip.innerHTML = `<div class="t">${esc(title)}</div>` + rows.map(([k, v, c]) =>
+    `<div class="r"><span>${c ? `<i class="dot" style="background:${c}"></i>` : ""}${esc(k)}</span><b>${esc(v)}</b></div>`).join("");
+  tip.classList.add("on");
+  const r = tip.getBoundingClientRect(); let L = x + 16, T = y - r.height - 14;
+  if (L + r.width > innerWidth - 8) L = x - r.width - 16; if (T < 8) T = y + 16;
+  tip.style.left = L + "px"; tip.style.top = T + "px";
+}
+const hideTip = () => tip.classList.remove("on");
 
-let AGENTS={};
-
-async function loadBoard(){
-  let d; try{ d=await (await fetch("board.json?_="+Date.now())).json(); }
-  catch{ document.getElementById("cols").innerHTML="<div class='empty'>board.json not reachable</div>"; return; }
-  AGENTS=d.agents||{};
-  if(d.project){ document.getElementById("title").textContent=d.project+" — Team"; document.title=d.project+" — AI-teammates"; }
-
-  document.getElementById("cols").innerHTML=(d.columns||[]).map(col=>{
-    const items=(d.tasks||[]).filter(t=>t.status===col.id);
-    const cards=items.map(t=>{
-      const a=AGENTS[t.agent]||{label:t.agent,colour:"#888"};
-      return `<div class="card" style="border-left-color:${esc(a.colour)}">
-        <div class="id">${esc(t.id)}</div>
-        <div class="ttl">${esc(t.title)}</div>
-        <div class="note">${esc(t.note||"")}</div>
-        <span class="who"><span class="dot" style="background:${esc(a.colour)}"></span>${esc(a.label)}</span>
-      </div>`;}).join("");
-    return `<div class="col"><h2><span>${esc(col.label)}</span><span>${items.length}</span></h2>
-            ${cards||'<div class="note" style="opacity:.5">—</div>'}</div>`;
-  }).join("");
-
-  // team tab: the roster is generated from the agent specs, with open cards counted from the board
-  const count=id=>(d.tasks||[]).filter(t=>t.agent===id&&t.status!=="done").length;
-  const row=(id,depth=0)=>{const a=AGENTS[id];if(!a)return"";
-    const open=count(id);
-    return `<div class="node" style="margin-left:${depth*30}px">
-      <span class="dot" style="background:${esc(a.colour)};margin-top:6px"></span>
-      <div><div class="nm">${esc(a.label)}</div><div class="rl">${esc(a.role)}</div></div>
-      <div class="load">${open?open+" open":"idle"}</div></div>`;};
-  // the tree comes from each agent's reports_to, so a new seat spec shows up by itself
-  const kids = p => Object.keys(AGENTS)
-    .filter(k => (AGENTS[k].reports_to || null) === p)
-    .sort((a,b) => (AGENTS[a].label||"").localeCompare(AGENTS[b].label||""));
-  const tree = (p=null, depth=0) =>
-    kids(p).map(k => row(k, depth) + tree(k, depth+1)).join("");
-  document.getElementById("org").innerHTML =
-    tree() || "<div class='empty'>No agents found in .ai-teammates/agents</div>";
-
-  document.getElementById("status").textContent =
-    `${(d.tasks||[]).length} tasks · board updated ${d.updated}`;
+/* dot-matrix numerals: a 5x7 grid per digit, drawn as SVG dots */
+const GLYPH = {
+  "0":["01110","10001","10011","10101","11001","10001","01110"], "1":["00100","01100","00100","00100","00100","00100","01110"],
+  "2":["01110","10001","00001","00110","01000","10000","11111"], "3":["11110","00001","00001","01110","00001","00001","11110"],
+  "4":["00010","00110","01010","10010","11111","00010","00010"], "5":["11111","10000","11110","00001","00001","10001","01110"],
+  "6":["00110","01000","10000","11110","10001","10001","01110"], "7":["11111","00001","00010","00100","01000","01000","01000"],
+  "8":["01110","10001","10001","01110","10001","10001","01110"], "9":["01110","10001","10001","01111","00001","00010","01100"]};
+function dotNumber(host, pitch) {
+  const svg = document.createElementNS(SVGNS, "svg"); svg.setAttribute("class", "dots"); svg.setAttribute("aria-hidden", "true"); host.appendChild(svg);
+  const cols = 24, cells = [];
+  for (let c = 0; c < cols; c++) for (let r = 0; r < 7; r++) {
+    const ci = document.createElementNS(SVGNS, "circle");
+    ci.setAttribute("cx", c * pitch + pitch / 2); ci.setAttribute("cy", r * pitch + pitch / 2); ci.setAttribute("r", pitch * .36);
+    ci.setAttribute("fill", "#fff"); ci.setAttribute("opacity", 0); ci.style.transitionDelay = (c * 9) + "ms"; svg.appendChild(ci); cells.push([c, r, ci]);
+  }
+  let cur = -1, raf = 0;
+  const draw = text => { const on = new Set(); let x = 0;
+    for (const ch of text) { const g = GLYPH[ch]; if (!g) continue; for (let r = 0; r < 7; r++) for (let k = 0; k < 5; k++) if (g[r][k] === "1") on.add((x + k) * 8 + r); x += 6; }
+    const used = Math.max(1, x - 1);
+    for (const [c, r, ci] of cells) { const v = on.has(c * 8 + r); ci.setAttribute("opacity", v ? 1 : (c < used ? .1 : 0)); ci.style.transform = v ? "none" : "scale(.55)"; }
+    svg.setAttribute("width", used * pitch); svg.setAttribute("height", 7 * pitch); svg.setAttribute("viewBox", `0 0 ${used * pitch} ${7 * pitch}`); };
+  return { set(to) { if (to === cur) return; cancelAnimationFrame(raf); const from = Math.max(0, cur), t0 = performance.now(); cur = to;
+    const f = now => { const t = reduce ? 1 : Math.min(1, (now - t0) / 700); draw(String(Math.round(from + (to - from) * ease(t)))); if (t < 1) raf = requestAnimationFrame(f); };
+    raf = requestAnimationFrame(f); } };
+}
+function card(id, html) {           // the tile's gradient, glow and rim around its content
+  const el = $("#" + id), tone = [...el.classList].some(c => c.startsWith("tone-"));
+  if (!el.dataset.built) { el.innerHTML = (tone ? `<div class="g"></div><div class="core"></div>` : "") + `<div class="in-c"></div>` + (tone ? `<div class="rim"></div>` : ""); el.dataset.built = 1; }
+  if (html !== undefined) el.querySelector(".in-c").innerHTML = html;
+  return el.querySelector(".in-c");
 }
 
-// Rules come from rules.json, generated from config.json, the agent specs and RULES.md:
-// the same sources the hooks enforce from, so this tab cannot drift from what is enforced.
-async function loadRules(){
-  let r; try{ r=await (await fetch("rules.json?_="+Date.now())).json(); }
-  catch{ document.getElementById("rulesBody").innerHTML=
-    "<div class='empty'>rules.json not reachable</div>"; return; }
-  document.getElementById("rulesBody").innerHTML =
-    "<div class='t' style='margin-bottom:14px'>standing rules · updated "+esc(r.updated)+"</div>"
-    + (r.groups||[]).map(g=>
-      `<div class="rule ${esc(g.cls||"")}"><h3>${esc(g.h)}</h3><ul>`
-      + (g.li||[]).map(x=>`<li>${x}</li>`).join("") + `</ul></div>`).join("");
+/* ---------- events: one time window for the whole Overview ---------- */
+function windowed() {
+  const now = Date.now(), day = now - 864e5;
+  const ev = D.events.filter(e => { const t = new Date(e.ts).getTime(); return t >= day && t <= now + 6e4; });
+  const first = ev.length ? Math.min(...ev.map(e => new Date(e.ts).getTime())) : now - 36e5;
+  const span = now - first, mins = [5, 10, 15, 30, 60, 120].find(m => m * 12 * 6e4 >= span) || 120;
+  const size = mins * 6e4, start = now - 12 * size;
+  const buckets = Array.from({length: 12}, (_, i) => ({t0: start + i * size, tools: 0, guard: 0, blocked: 0, asked: 0, over: 0, by: {}}));
+  for (const e of ev) { const i = Math.floor((new Date(e.ts).getTime() - start) / size); if (i < 0 || i > 11) continue; const b = buckets[i];
+    if (e.kind === "tool") b.tools++; else if (e.kind === "blocked") { b.guard++; b.blocked++; }
+    else if (e.kind === "ask") { b.guard++; b.asked++; } else if (e.kind === "override") { b.guard++; b.over++; }
+    const a = e.agent || "main"; b.by[a] = (b.by[a] || 0) + 1; }
+  const label = mins * 12 >= 60 ? `last ${mins * 12 / 60} h` : `last ${mins * 12} min`;
+  return {ev, buckets, label, size};
 }
 
-// Every tool call, guard block and override, from the hooks' event log.
-async function loadActivity(){
-  let text; try{ text=await (await fetch("events.jsonl?_="+Date.now())).text(); }catch{ return; }
-  const ev=text.trim().split("\n").filter(Boolean).map(l=>{try{return JSON.parse(l)}catch{return null}}).filter(Boolean);
-  document.getElementById("rows").innerHTML = ev.slice(-80).reverse().map(e=>{
-    let act,cls="";
-    if(e.kind==="blocked"){act="BLOCKED · "+esc(e.rule);cls="blocked";}
-    else if(e.kind==="override"){act="OVERRIDE · "+esc(e.tool||e.rule||"");cls="override";}
-    else if(e.kind==="ask"){act="ASKED · "+esc(e.rule);cls="override";}
-    else act=esc(e.tool||"");
-    return `<tr><td class="t">${ago(e.ts)}</td><td>${esc(e.agent||"main")}</td>
-            <td class="${cls}">${act}</td>
-            <td style="color:var(--muted)">${esc(e.message||e.reason||e.target||"").slice(0,90)}</td></tr>`;
-  }).join("") || '<tr><td colspan="4" class="empty">No events yet.</td></tr>';
+/* ================= Overview tiles ================= */
+let workNum = null;
+function ovWork() {
+  const b = D.board; if (!b) return;
+  const tasks = b.tasks || [], cols = b.columns || [], open = tasks.filter(t => !isDone(t)), done = tasks.length - open.length;
+  const el = card("ov-work");
+  if (!el.dataset.ready) {
+    el.innerHTML = `<div class="row sp"><div class="ttl">Work</div><div class="legend wl"></div></div>
+      <div class="row" style="margin-top:16px;align-items:flex-end;gap:16px;flex-wrap:wrap"><div class="wn"></div>
+        <div style="padding-bottom:4px"><div class="mono wd" style="font-size:12.5px;font-weight:600;color:${ACC}"></div><div class="muted wc" style="margin-top:3px"></div></div></div>
+      <div class="wbar" style="position:absolute;left:24px;right:24px;bottom:148px"></div>
+      <div class="wlist" style="position:absolute;left:24px;right:24px;bottom:16px"></div>`;
+    workNum = dotNumber(el.querySelector(".wn"), innerWidth < 520 ? 8 : 13); el.dataset.ready = 1;
+  }
+  el.querySelector(".wl").innerHTML = cols.map(c => `<span><i class="dot" style="background:${colColour(c.id)}"></i>${esc(c.label)}</span>`).join("");
+  workNum.set(open.length);
+  const inReview = tasks.filter(t => t.status === "review").length;
+  el.querySelector(".wd").textContent = inReview ? `${inReview} waiting for your review` : "nothing waiting for you";
+  el.querySelector(".wc").textContent = `open cards · ${done} done · board updated ${b.updated || "?"}`;
+  const total = Math.max(1, tasks.length);
+  el.querySelector(".wbar").innerHTML = `<div style="display:flex;gap:3px;height:8px">${cols.map(c => { const n = tasks.filter(t => t.status === c.id).length;
+      return n ? `<div title="${esc(c.label)}: ${n}" style="flex:${n} 1 0;border-radius:4px;background:${colColour(c.id)};opacity:${c.id === "done" ? .55 : 1}"></div>` : ""; }).join("")}</div>
+    <div style="display:flex;gap:3px;margin-top:7px">${cols.map(c => { const n = tasks.filter(t => t.status === c.id).length;
+      return n ? `<span class="mono" style="flex:${n} 1 0;font-size:11px;color:rgba(255,255,255,.75);white-space:nowrap;overflow:hidden">${esc(c.label)} ${n}</span>` : ""; }).join("")}</div>`;
+  const order = {review: 0, blocked: 1, doing: 2, in_progress: 2};
+  const flight = open.filter(t => t.status in order).sort((a, c) => order[a.status] - order[c.status]).slice(0, 3);
+  const A = b.agents || {};
+  el.querySelector(".wlist").innerHTML = flight.length ? flight.map((t, i) => { const a = A[t.agent] || {label: t.agent, colour: "#fff"};
+    return `<div class="row" style="height:40px;${i ? "border-top:1px solid rgba(255,255,255,.14)" : ""}">
+      <span class="mono" style="width:58px;font-size:11.5px;color:rgba(255,255,255,.7)">${esc(t.id)}</span>
+      <span class="ellip" style="flex:1;font-size:13.5px;font-weight:600">${esc(t.title)}</span>
+      <span class="who" style="margin:0;background:rgba(0,0,0,.35)"><i class="dot" style="background:${esc(a.colour)}"></i>${esc(a.label)}</span>
+      <span class="pill" style="color:${colColour(t.status)}">${esc(t.status)}</span></div>`; }).join("")
+    : `<div class="muted" style="color:rgba(255,255,255,.7)">No card is in progress or waiting for review.</div>`;
 }
 
-function tick(){ loadBoard(); loadActivity(); loadRules(); }
-tick(); setInterval(tick, 5000);
+function ovHold() {
+  const b = D.board; if (!b) return;
+  const A = b.agents || {}, open = (b.tasks || []).filter(t => !isDone(t));
+  const by = {}; open.forEach(t => by[t.agent] = (by[t.agent] || 0) + 1);
+  const ids = Object.keys(by).sort((x, y) => ((A[x] || {}).kind === "cto") - ((A[y] || {}).kind === "cto") || by[y] - by[x]);
+  const seats = ids.filter(i => (A[i] || {}).kind === "seat").reduce((s, i) => s + by[i], 0);
+  const pct = open.length ? Math.round(seats / open.length * 100) : 0;
+  const n = 56; let s = "", acc = 0;
+  const bounds = ids.map(i => { acc += by[i] / Math.max(1, open.length); return [acc, i]; });
+  for (let i = 0; i <= n; i++) { const f = i / n, a = 180 + f * 180, owner = (bounds.find(([e]) => f <= e + 1e-9) || [0, null])[1];
+    const col = owner ? ((A[owner] || {}).colour || "#fff") : "rgba(255,255,255,.25)";
+    const [x1, y1] = polar(136, a), [x2, y2] = polar(i % 7 === 0 ? 112 : 118, a);
+    s += `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${col}" stroke-width="3.2" stroke-linecap="round"/>`; }
+  s += `<text y="-22" text-anchor="middle" font-family="Geist,Inter,system-ui,sans-serif" font-weight="200" font-size="52" fill="#fff" letter-spacing="-2">${pct}<tspan font-size="17" dy="-24" fill="${T2}">%</tspan></text>
+        <text y="0" text-anchor="middle" font-size="12" font-weight="500" fill="${T3}" font-family="Geist,Inter,system-ui,sans-serif">of open cards on seats</text>`;
+  card("ov-hold", `<div class="row sp"><div class="ttl">Who holds the work</div><span class="pill" style="background:rgba(255,255,255,.12)">${open.length} open</span></div>
+    <svg width="300" height="168" viewBox="-150 -150 300 168" style="position:absolute;left:50%;margin-left:-150px;top:70px" aria-hidden="true">${s}</svg>
+    <div style="position:absolute;left:24px;right:24px;bottom:16px">${ids.slice(0, 4).map((i, k) => { const a = A[i] || {label: i, colour: "#fff"};
+      return `<div class="row" style="height:30px;${k ? "border-top:1px solid rgba(255,255,255,.1)" : ""}"><i class="dot" style="background:${esc(a.colour)}"></i>
+        <span class="ellip" style="flex:1;font-size:13px;font-weight:600">${esc(a.label)}</span>
+        <span class="mono muted" style="width:44px;text-align:right">${Math.round(by[i] / open.length * 100)}%</span>
+        <span class="mono" style="width:56px;text-align:right;font-size:13px">${by[i]} card${by[i] > 1 ? "s" : ""}</span></div>`; }).join("") || `<div class="muted">No open cards.</div>`}</div>`);
+}
+
+function ovBlocks(W) {
+  const day = W.ev, blocked = day.filter(e => e.kind === "blocked"), asked = day.filter(e => e.kind === "ask").length, over = day.filter(e => e.kind === "override").length;
+  const rules = {}; blocked.forEach(e => rules[e.rule] = (rules[e.rule] || 0) + 1);
+  const topRule = Object.entries(rules).sort((a, b) => b[1] - a[1])[0];
+  const el = card("ov-blocks");
+  if (!el.dataset.ready) { el.innerHTML = `<div class="row sp"><div class="cap">Guard blocks</div><span class="pill bx"></span></div>
+      <div style="position:absolute;left:22px;bottom:38px;display:flex;align-items:center;gap:10px">
+        <svg width="26" height="32" viewBox="0 0 26 32" aria-hidden="true"><path d="M13 2 3 6v8c0 7 4.3 12.7 10 15 5.7-2.3 10-8 10-15V6L13 2z" fill="none" stroke="#0b0b0c" stroke-width="2.4" stroke-linejoin="round"/><path d="m8.5 16 3 3 6-6.5" fill="none" stroke="#0b0b0c" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span class="big bv" style="font-size:52px">0</span></div>
+      <div class="muted bs ellip" style="position:absolute;left:24px;right:20px;bottom:16px;font-size:11.5px"></div>`; el.dataset.ready = 1; }
+  tween(el.querySelector(".bv"), blocked.length, v => Math.round(v));
+  el.querySelector(".bx").textContent = `${asked} asked · ${over} override${over === 1 ? "" : "s"}`;
+  el.querySelector(".bs").textContent = topRule ? `last 24 h · most often: ${topRule[0]}` : "last 24 h · nothing refused";
+}
+
+function ticks(n, lit, h = 20) {          // a row of tick marks; the first `lit` of them in the accent
+  return `<svg width="100%" height="${h}" preserveAspectRatio="none" viewBox="0 0 ${n * 10} ${h}" aria-hidden="true">${Array.from({length: n}, (_, i) =>
+    `<line x1="${i * 10 + 5}" x2="${i * 10 + 5}" y1="${i % 6 === 0 ? 1 : 7}" y2="${h - 1}" stroke="${i < lit ? ACC : "rgba(255,255,255,.26)"}" stroke-width="1.8" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`).join("")}</svg>`;
+}
+function ovBranch() {
+  const g = D.git; if (!g || g.error) return;
+  const unmerged = g.branches.filter(b => b.ahead > 0 && b.name !== g.production).length;
+  card("ov-branch", `<div class="row sp"><div class="cap">Branch</div><span class="muted">${g.counts.worktrees} worktrees</span></div>
+    <div class="ellip" style="margin-top:14px;font-size:30px;font-weight:300;letter-spacing:-.03em">${esc(g.current)}</div>
+    <div class="row" style="margin-top:6px;gap:10px"><span class="mono ${g.dirty ? "acc" : ""}" style="font-size:12.5px">${g.dirty} dirty</span>
+      <span class="muted">${unmerged} of ${g.counts.branches} branches unmerged</span></div>
+    <div style="position:absolute;left:24px;right:24px;bottom:18px">${ticks(Math.max(6, g.counts.branches * 6), unmerged * 6)}</div>`);
+}
+function ovMem() {
+  const h = D.health; if (!h || h.error) return;
+  const cap = h.checks.find(c => c.check.includes("claude-mem")) || {}, brd = h.checks.find(c => c.check === "board.json") || {};
+  const ok = !cap.stale;
+  card("ov-mem", `<div class="row sp"><div class="cap">Memory</div><span class="muted">board ${brd.days === null || brd.days === undefined ? "?" : brd.days + "d old"}</span></div>
+    <div class="row" style="margin-top:14px;gap:10px"><i class="dot" style="width:10px;height:10px;background:${ok ? ACC : "var(--bad)"}"></i>
+      <span style="font-size:30px;font-weight:300;letter-spacing:-.03em">${ok ? "capturing" : "not capturing"}</span></div>
+    <div class="muted" style="position:absolute;left:24px;right:24px;bottom:16px;line-height:1.45;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${esc(cap.why || "")}</div>`);
+}
+function ovReview() {
+  const b = D.board; if (!b) return;
+  const rv = (b.tasks || []).filter(t => t.status === "review");
+  card("ov-review", `<div class="row sp"><div class="cap">Waiting for you</div><span class="muted">review</span></div>
+    <div class="row" style="margin-top:12px;align-items:baseline;gap:10px"><span class="big" style="font-size:44px">${rv.length}</span><span class="muted">card${rv.length === 1 ? "" : "s"} to review and merge</span></div>
+    <div style="position:absolute;left:24px;right:24px;bottom:14px">${rv.slice(0, 2).map((t, i) =>
+      `<div class="row" style="height:26px;${i ? "border-top:1px solid rgba(255,255,255,.08)" : ""}"><span class="mono acc" style="font-size:11.5px;width:52px">${esc(t.id)}</span><span class="ellip" style="flex:1;font-size:12.5px;font-weight:600">${esc(t.title)}</span></div>`).join("")}</div>`);
+}
+
+function ovPulse(W) {
+  const el = card("ov-pulse");
+  if (!el.dataset.ready) { el.innerHTML = `<div class="row sp"><div><div class="ttl">Activity</div><div class="muted pm" style="margin-top:4px"></div></div>
+      <div class="legend" style="flex-direction:column;gap:4px;align-items:flex-end"><span><i class="dot" style="background:#fff"></i>Tool calls</span><span><i class="dot" style="background:#FFD0E6"></i>Blocks, asks, overrides</span></div></div>
+      <svg class="ps" style="position:absolute;left:0;bottom:10px" aria-hidden="true"></svg>`; el.dataset.ready = 1; }
+  const B = W.buckets, tools = B.reduce((s, b) => s + b.tools, 0), guard = B.reduce((s, b) => s + b.guard, 0);
+  el.querySelector(".pm").innerHTML = `<span class="mono" style="color:#fff">${tools}</span> tool calls · <span class="mono" style="color:${ACC}">${guard}</span> stopped by a guard · ${esc(W.label)}`;
+  const svg = el.querySelector(".ps"), Wd = el.clientWidth, Hh = 236, L = 40, R = Wd - 26, mid = Hh / 2, lab = 14, amp = mid - lab - 10;
+  svg.setAttribute("width", Wd); svg.setAttribute("height", Hh); svg.setAttribute("viewBox", `0 0 ${Wd} ${Hh}`);
+  const mt = Math.max(4, ...B.map(b => b.tools)), mg = Math.max(2, ...B.map(b => b.guard));
+  const X = i => L + i / 11 * (R - L);
+  const up = B.map((b, i) => [X(i), mid - lab - b.tools / mt * amp]), dn = B.map((b, i) => [X(i), mid + lab + b.guard / mg * amp]);
+  const fmtT = t => new Date(t).toLocaleTimeString([], {hour: "2-digit", minute: "2-digit"});
+  let s = "";
+  [0, .5, 1].forEach(f => { const yT = mid - lab - f * amp, yB = mid + lab + f * amp;
+    s += `<line x1="${L}" x2="${R}" y1="${yT}" y2="${yT}" stroke="${HAIR}"/><line x1="${L}" x2="${R}" y1="${yB}" y2="${yB}" stroke="${HAIR}"/>
+      <text x="${L - 10}" y="${yT + 3.5}" text-anchor="end" font-size="10" fill="${T3}" font-family="ui-monospace,monospace">${Math.round(f * mt)}</text>
+      <text x="${L - 10}" y="${yB + 3.5}" text-anchor="end" font-size="10" fill="${T3}" font-family="ui-monospace,monospace">${Math.round(f * mg)}</text>`; });
+  [0, 4, 8, 11].forEach(i => s += `<text x="${X(i)}" y="${mid + 4}" text-anchor="${i === 0 ? "start" : i === 11 ? "end" : "middle"}" font-size="10" font-weight="500" fill="rgba(255,255,255,.78)" font-family="ui-monospace,monospace">${fmtT(B[i].t0)}</text>`);
+  s += `<path d="${smooth(up)}L${R},${mid - lab}L${L},${mid - lab}Z" fill="rgba(255,255,255,.12)"/><path d="${smooth(up)}" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/>`;
+  s += `<path d="${smooth(dn)}L${R},${mid + lab}L${L},${mid + lab}Z" fill="rgba(255,208,230,.14)"/><path d="${smooth(dn)}" fill="none" stroke="#FFD0E6" stroke-width="2.4" stroke-linecap="round"/>`;
+  B.forEach((b, i) => { if (b.guard) s += `<circle cx="${X(i)}" cy="${dn[i][1]}" r="4" fill="${ACC}" stroke="rgba(0,0,0,.4)"/>`; });
+  s += `<line class="hl" y1="8" y2="${Hh - 8}" stroke="#fff" stroke-opacity=".55" opacity="0"/><rect class="hit" x="${L - 10}" width="${R - L + 20}" height="${Hh}" fill="transparent"/>`;
+  svg.innerHTML = s;
+  const hit = svg.querySelector(".hit"), hl = svg.querySelector(".hl");
+  hit.onpointermove = e => { const r = svg.getBoundingClientRect(), x = e.clientX - r.left, i = Math.max(0, Math.min(11, Math.round((x - L) / (R - L) * 11))), b = B[i];
+    hl.setAttribute("x1", X(i)); hl.setAttribute("x2", X(i)); hl.setAttribute("opacity", 1);
+    showTip(r.left + X(i), r.top + up[i][1], `${fmtT(b.t0)} – ${fmtT(b.t0 + W.size)}`, [["Tool calls", b.tools, "#fff"], ["Blocked", b.blocked, "#FFD0E6"], ["Asked you", b.asked], ["Overrides", b.over]]); };
+  hit.onpointerleave = () => { hl.setAttribute("opacity", 0); hideTip(); };
+}
+
+function spark(vals, w = 92, h = 28) {
+  const mx = Math.max(1, ...vals), P = vals.map((v, i) => [2 + i / (vals.length - 1) * (w - 6), h - 3 - v / mx * (h - 7)]), e = P[P.length - 1];
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" aria-hidden="true"><path d="${smooth(P)}L${e[0]},${h}L${P[0][0]},${h}Z" fill="rgba(255,255,255,.14)"/>
+    <path d="${smooth(P)}" fill="none" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/><circle cx="${e[0]}" cy="${e[1]}" r="3" fill="${vals[vals.length - 1] ? ACC : "#fff"}" stroke="rgba(0,0,0,.35)"/></svg>`;
+}
+function ovCrew(W) {
+  const b = D.board; if (!b) return;
+  const A = b.agents || {}, ids = Object.keys(A).filter(i => A[i].kind !== "owner");
+  const open = {}; (b.tasks || []).filter(t => !isDone(t)).forEach(t => open[t.agent] = (open[t.agent] || 0) + 1);
+  const evs = id => W.buckets.map(bk => bk.by[id] || 0), total = id => evs(id).reduce((s, v) => s + v, 0);
+  ids.sort((x, y) => (A[x].kind !== "cto") - (A[y].kind !== "cto") || total(y) - total(x));
+  const short = m => String(m || "?").replace(/^claude-/, "").replace(/-\d{8}$/, "");
+  card("ov-crew", `<div class="row sp"><div class="ttl">Team</div><span class="muted">${esc(W.label)}</span></div>
+    <div style="position:absolute;left:24px;right:24px;bottom:12px">${ids.slice(0, 5).map((id, i) => { const a = A[id];
+      return `<div class="row" style="height:52px;${i ? "border-top:1px solid rgba(255,255,255,.12)" : ""}">
+        <i class="dot" style="background:${esc(a.colour)}"></i>
+        <div style="flex:1;min-width:0"><div class="ellip" style="font-size:13.5px;font-weight:600">${esc(a.label)}${a.running ? ` <span class="pill" style="color:${ACC}">running</span>` : ""}</div>
+          <div class="mono ellip" style="font-size:11px;color:rgba(255,255,255,.62)">${esc(short(a.model))}${a.read_only ? " · read-only" : ""}</div></div>
+        ${spark(evs(id))}
+        <div style="width:64px;text-align:right"><div class="mono" style="font-size:13px">${total(id)}</div><div class="mono" style="font-size:11px;color:rgba(255,255,255,.62)">${open[id] || 0} open</div></div></div>`; }).join("")}</div>`);
+}
+
+function ovBranches() {
+  const g = D.git; if (!g || g.error) return;
+  const list = g.branches.filter(b => !b.remote && b.name !== g.production).sort((a, b) => b.ahead - a.ahead).slice(0, 5);
+  const mx = Math.max(1, ...list.map(b => b.ahead));
+  card("ov-br", `<div class="ttl">Branches</div><div class="muted" style="margin-top:4px">commits ${esc(g.production)} does not have</div>
+    <div style="position:absolute;left:24px;right:24px;bottom:18px">${list.map(b => { const cur = b.name === g.current;
+      return `<div style="margin-top:12px"><div class="row sp" style="font-size:12.5px"><span class="mono ellip" style="font-weight:${cur ? 600 : 500}">${esc(b.name)}</span>
+        <span class="mono" style="color:${cur ? ACC : "#fff"}">${b.ahead}</span></div>
+        <div style="height:10px;margin-top:6px;border-radius:5px;background:rgba(0,0,0,.28)"><div style="height:100%;width:${Math.max(4, b.ahead / mx * 100)}%;border-radius:5px;background:${cur ? ACC : "#fff"}"></div></div></div>`; }).join("") || `<div class="muted">No other branches.</div>`}</div>`);
+}
+
+function renderOverview() {
+  const W = windowed();
+  $("#window").textContent = `activity: ${W.label}`;
+  ovWork(); ovHold(); ovBlocks(W); ovBranch(); ovMem(); ovReview(); ovPulse(W); ovCrew(W); ovBranches();
+  if (!$("#grid").classList.contains("in")) { document.querySelectorAll("#grid .card").forEach((c, i) => c.style.transitionDelay = (i * 60) + "ms");
+    requestAnimationFrame(() => $("#grid").classList.add("in")); }
+}
+
+/* ================= detail tabs ================= */
+function renderBoard() {
+  const b = D.board; if (!b) return; const A = b.agents || {};
+  $("#cols").innerHTML = (b.columns || []).map(col => { const items = (b.tasks || []).filter(t => t.status === col.id);
+    return `<div class="col"><h2><span class="cap" style="color:${colColour(col.id) === "#FFFFFF" ? T2 : colColour(col.id)}">${esc(col.label)}</span><span class="mono muted">${items.length}</span></h2>
+      ${items.map(t => { const a = A[t.agent] || {label: t.agent, colour: "#888"};
+        return `<div class="tcard"><span class="bar" style="background:${esc(a.colour)}"></span><div class="id">${esc(t.id)}</div><div class="tt">${esc(t.title)}</div>
+          <div class="nt">${esc(t.note || "")}</div><span class="who"><i class="dot" style="background:${esc(a.colour)}"></i>${esc(a.label)}</span></div>`; }).join("") || '<div class="muted" style="padding:4px">—</div>'}</div>`; }).join("");
+}
+function renderGit() {
+  const g = D.git;
+  if (!g) { $("#gitBody").innerHTML = "<div class='empty'>/git.json not reachable: start the dashboard with python3 .ai-teammates/hooks/dashboard_server.py</div>"; return; }
+  if (g.error) { $("#gitBody").innerHTML = "<div class='empty'>" + esc(g.error) + "</div>"; return; }
+  const prod = esc(g.production || "main");
+  $("#gitBody").innerHTML = `<div class="sheet"><h3>Worktrees <span class="t">${g.counts.worktrees}</span></h3><table><thead><tr><th>Folder</th><th>Branch</th><th>Path</th></tr></thead><tbody>
+      ${g.worktrees.map(w => `<tr><td class="t">${esc(w.name)}</td><td>${esc(w.branch || "(detached)")}${w.branch === g.current ? ' <span class="acc">← you are here</span>' : ""}</td><td class="t">${esc(w.path)}</td></tr>`).join("")}</tbody></table></div>
+    <div class="sheet"><h3>Branches <span class="t">${g.counts.branches}${g.counts.remoteOnly ? " + " + g.counts.remoteOnly + " remote-only" : ""} · unmerged = has commits ${prod} does not · ${g.fetchedAt ? "remotes as of last fetch, " + Math.round((Date.now() / 1000 - g.fetchedAt) / 60) + " min ago" : "remotes never fetched"}</span></h3>
+      <table><thead><tr><th>Branch</th><th>vs ${prod}</th><th>Behind</th><th>Last commit</th></tr></thead><tbody>
+      ${g.branches.map(b => `<tr><td>${esc(b.name)}${b.checkedOut ? ' <span class="t">[checked out]</span>' : ""}${b.remote ? ' <span class="acc">[remote only]</span>' : ""}</td>
+        <td>${b.ahead === 0 ? '<span class="t">merged</span>' : `<span class="acc">${b.ahead} unmerged</span>`}</td><td class="t">${b.behind ? b.behind + " behind " + prod : "—"}</td><td class="t">${esc(b.last)}</td></tr>`).join("")}</tbody></table></div>
+    ${g.dirty ? `<div class="sheet"><h3>Uncommitted here <span class="t">${g.dirty}</span></h3><div class="t" style="line-height:1.8">${g.dirtyFiles.map(esc).join("<br>")}</div></div>` : ""}`;
+}
+function renderTeam() {
+  const b = D.board; if (!b) return; const A = b.agents || {};
+  const count = id => (b.tasks || []).filter(t => t.agent === id && !isDone(t)).length;
+  const kids = p => Object.keys(A).filter(k => (A[k].reports_to || null) === p).sort((x, y) => (A[x].label || "").localeCompare(A[y].label || ""));
+  const tree = (p = null, depth = 0) => kids(p).map(k => { const a = A[k], n = count(k);
+    return `<div class="node" style="margin-left:${depth * 30}px"><i class="dot" style="background:${esc(a.colour)};margin-top:6px"></i>
+      <div><div class="nm">${esc(a.label)}</div><div class="rl">${esc(a.role)}</div></div><div class="ld">${n ? n + " open" : "idle"}</div></div>` + tree(k, depth + 1); }).join("");
+  $("#org").innerHTML = tree() || "<div class='empty'>No agents found in .ai-teammates/agents</div>";
+}
+function renderRules() {
+  const r = D.rules; if (!r) return;
+  $("#rulesBody").innerHTML = `<div class="t" style="margin-bottom:14px">standing rules · updated ${esc(r.updated)}</div>`
+    + (r.groups || []).map(g => `<div class="sheet ${esc(g.cls || "")}"><h4>${esc(g.h)}</h4><ul>${(g.li || []).map(x => `<li>${x}</li>`).join("")}</ul></div>`).join("");
+}
+function renderActivity() {
+  $("#rows").innerHTML = D.events.slice(-80).reverse().map(e => { let act, cls = "";
+    if (e.kind === "blocked") { act = "BLOCKED · " + esc(e.rule); cls = "blk"; }
+    else if (e.kind === "override") { act = "OVERRIDE · " + esc(e.tool || e.rule || ""); cls = "acc"; }
+    else if (e.kind === "ask") { act = "ASKED · " + esc(e.rule); cls = "acc"; }
+    else act = esc(e.tool || e.kind || "");
+    return `<tr><td class="t">${ago(e.ts)}</td><td>${esc(e.agent || "main")}</td><td class="${cls}">${act}</td><td style="color:var(--t2)">${esc(e.message || e.reason || e.target || "").slice(0, 110)}</td></tr>`; }).join("")
+    || '<tr><td colspan="4" class="empty">No events yet.</td></tr>';
+}
+
+/* ================= header and data ================= */
+function renderHeader() {
+  const b = D.board, g = D.git, h = D.health;
+  if (b && b.project) { $("#title").textContent = b.project; document.title = b.project + " · AI-teammates"; }
+  if (b) $("#status").textContent = `${(b.tasks || []).length} cards · board updated ${b.updated}`;
+  if (g && !g.error) $("#gitNow").innerHTML = `<i></i><b>${esc(g.current)}</b> · ${g.counts.branches} branches · ${g.counts.worktrees} worktrees${g.dirty ? ` · <span class="acc">${g.dirty} dirty</span>` : ""}`;
+  if (h && !h.error) { const bad = h.checks.filter(c => c.stale), el = $("#memHealth");
+    el.className = "chip" + (bad.length ? " bad" : ""); el.title = h.checks.map(c => c.check + ": " + (c.why || (c.days === null ? "never" : c.days + "d"))).join("\n");
+    el.innerHTML = `<i></i>memory ${bad.length ? "<b>" + bad.length + " stale</b>" : "<b>ok</b>"}`; }
+}
+function render() {
+  renderHeader();
+  ({overview: renderOverview, board: renderBoard, git: renderGit, team: renderTeam, rules: renderRules, activity: renderActivity}[view] || (() => {}))();
+}
+async function get(path, text) {
+  try { const r = await fetch(path + "?_=" + Date.now()); return text ? await r.text() : await r.json(); } catch { return null; }
+}
+async function load() {
+  const [board, git, health, rules, ev] = await Promise.all([get("board.json"), get("git.json"), get("health.json"), get("rules.json"), get("events.jsonl", true)]);
+  Object.assign(D, {board, git, health, rules});
+  D.events = (ev || "").trim().split("\n").filter(Boolean).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+  render();
+}
+let rz; new ResizeObserver(() => { clearTimeout(rz); rz = setTimeout(() => { if (view === "overview" && D.board) renderOverview(); }, 140); }).observe(document.body);
+if (location.hash) show(location.hash.slice(1));
+load(); setInterval(load, 10000);
 </script>
 </body>
 </html>

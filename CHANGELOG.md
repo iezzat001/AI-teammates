@@ -14,6 +14,15 @@ All notable changes to this project are documented here. The format follows
 - `scripts/dashboard_demo.py`: the dashboard for an invented project, and the README screenshots.
 - The README explains how a task flows, and how a teammate differs from a Claude Code subagent.
 
+### Changed
+
+- The dashboard has a new dark design and an **Overview** tab: a bento grid of open work, who holds
+  it, guard blocks, branch, memory, cards waiting for review, activity, team and branches, all from
+  the live data. The look is inspired by the "Finance Bento" design by vasnev.art; the code is our
+  own, with no build step and no external requests (now checked by the test suite). `?still` turns
+  the animations off, for screenshots. The roster carries `kind`, `model`, `where` and `state` as
+  fields beside its one-line `role`.
+
 ### Security
 
 Gaps found by an analysis of the guardrails, each now executed by the test suite and seen to fail
