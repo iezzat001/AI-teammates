@@ -2,6 +2,7 @@
 """Run one task card on a seat, and report what happened as FACTS.
 
     python3 .ai-teammates/hooks/seat.py run <seat> --card <ID>     (dispatches here)
+    python3 .ai-teammates/hooks/seat.py land <ID>                   merge it, checked on the merged result
     python3 .ai-teammates/hooks/seat.py card-clean <ID> [--abandon]
 
 What this replaces: `seat.py run <seat> "<one line>"`, which launched a harness and
@@ -478,6 +479,118 @@ def clean(cid: str, abandon: bool) -> int:
         except Exception as e:
             print(f"  (not filed to memory: {e}; run `memlife.py file {cid}` when it is back)")
     return 0
+
+
+# --- landing -------------------------------------------------------------------------------
+
+def integration_checkout():
+    """The worktree that has BASE checked out, if any: its files must move with the branch."""
+    cur = None
+    for line in git("worktree", "list", "--porcelain").stdout.splitlines():
+        if line.startswith("worktree "):
+            cur = Path(line[9:])
+        elif line == f"branch refs/heads/{BASE}":
+            return cur
+    return None
+
+
+def annotate(cid: str, **facts) -> None:
+    """Add facts to the card's last run row: how it landed is part of that run's record."""
+    lines = seat.RUNS.read_text(encoding="utf-8").splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        try:
+            r = json.loads(lines[i])
+        except ValueError:
+            continue
+        if r.get("card") == cid:
+            lines[i] = json.dumps({**r, **facts}, ensure_ascii=False)
+            break
+    seat.RUNS.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _drop(wt: Path) -> None:
+    if wt.exists():
+        git("worktree", "remove", "--force", str(wt))
+    git("worktree", "prune")
+
+
+def land(cid: str) -> int:
+    """Merge a done card into BASE only if its checks pass on the MERGED result.
+
+    It used to be the CTO typing `git merge` (cto.md step 4), and nothing re-ran the card's checks
+    after it: the card's worktree was cut from BASE when it started, and BASE may have moved since.
+    The merge happens in a scratch worktree; BASE moves only when everything passed there, so a
+    failure or a conflict leaves it exactly as it was. A conflict is never resolved here."""
+    try:
+        card = cardmod.load(cid)
+    except Exception as e:
+        sys.exit(f"{e}")
+    spec = seat.load_agents().get(card.get("seat")) or {}
+    br, prev, co = card_branch(spec, cid), last_run(cid), integration_checkout()
+    if merged(cid):
+        print(f"  {cid} is already merged into {BASE}")
+        return clean(cid, False)
+    waiting = [d for d in card.get("depends_on") or [] if not merged(d)]
+    refuse = (f"its last run is {(prev or {}).get('status') or 'missing'}, not done" if not prev
+              or prev.get("status") != "done" or not prev.get("head")
+              else f"it depends on {', '.join(waiting)}, not merged into {BASE} yet" if waiting
+              else f"the integration checkout {co} has uncommitted changes"
+              if co and git("status", "--porcelain", "--untracked-files=no", cwd=co).stdout.strip() else "")
+    if refuse:
+        print(f"  card {cid} cannot land: {refuse}. Nothing was merged.")
+        return 1
+
+    tip = git("rev-parse", BASE).stdout.strip()
+    scratch = REPO.parent / f"{REPO.name}-land-{cid.lower()}"
+    _drop(scratch)
+    r = git("worktree", "add", "--detach", str(scratch), tip)
+    if r.returncode != 0:
+        sys.exit(f"could not create the scratch worktree {scratch}:\n{r.stderr.strip()}")
+    status, reason, acc, sha = "failed", "", [], ""
+    try:
+        m = git("merge", "--no-ff", "-q", "-m", f"Land {cid}: {card.get('title') or card['goal'][:60]}", br, cwd=scratch)
+        conflicts = git("diff", "--name-only", "--diff-filter=U", cwd=scratch).stdout.split()
+        if conflicts:
+            git("merge", "--abort", cwd=scratch)
+            status, reason = "blocked", f"merge-conflict | {', '.join(conflicts)}"
+            loopguard.make_record(f"land-{cid}", {}, "merge-conflict", "human",
+                                  f"merging {br} into {BASE} conflicts in {', '.join(conflicts)}", tried=[],
+                                  need=f"resolve the merge of {br} into {BASE} by hand: {', '.join(conflicts)}",
+                                  card=cid, who="cto")
+        elif m.returncode != 0:
+            reason = f"merge failed: {(m.stderr or m.stdout).strip()[:120]}"
+        else:
+            reason = run_setup(scratch)
+            acc = [] if reason else cardmod.run_acceptance(card, scratch)
+            failed = [a for a in acc if a["rc"] != 0]
+            if failed:
+                reason = (f"acceptance failed on the merged result: {failed[0]['run'][:60]} "
+                          f"(exit {failed[0]['rc']}): {failed[0]['tail'][-100:]}")
+            elif not reason:
+                sha = git("rev-parse", "HEAD", cwd=scratch).stdout.strip()
+                adv = (git("merge", "--ff-only", "-q", sha, cwd=co) if co
+                       else git("update-ref", f"refs/heads/{BASE}", sha, tip))
+                if adv.returncode != 0:
+                    reason = f"{BASE} could not move to the merge: {(adv.stderr or adv.stdout).strip()[:120]}"
+                else:
+                    status = "merged"
+    finally:
+        _drop(scratch)
+
+    passed = sum(1 for a in acc if a["rc"] == 0)
+    facts = {"status": status, "ts": now_iso(), "reason": reason, "accept": [{"run": a["run"], "rc": a["rc"]} for a in acc]}
+    if status == "merged":
+        annotate(cid, merged=sha, land=facts)
+        board.set_state(cid, "done", f"landed {facts['ts'][:16]}Z: {sha[:8]} on {BASE}, "
+                                     f"acceptance {passed}/{len(acc)} on the merged result")
+        print(f"  LANDED {cid}: {br} merged into {BASE} @ {sha[:8]} · acceptance {passed}/{len(acc)} on the merged result")
+        return clean(cid, False)
+    annotate(cid, land=facts)
+    board.set_state(cid, "blocked", f"land {facts['ts'][:16]}Z: {status} | {reason}"[:300])
+    print(f"  NOT LANDED {cid}: {reason}\n  {BASE} is unchanged.")
+    if status == "blocked":
+        print("  The conflict is the owner's to resolve; it is recorded for the next session.")
+    return EXIT.get(status, 1)
 
 
 if __name__ == "__main__":

@@ -3,7 +3,8 @@
 
     python3 .ai-teammates/hooks/seat.py list
     python3 .ai-teammates/hooks/seat.py run --card DOC-2          # the unit of delegation (cardrun.py)
-    python3 .ai-teammates/hooks/seat.py card-clean DOC-2          # after merging its branch
+    python3 .ai-teammates/hooks/seat.py land DOC-2                # merge it, its checks re-run on the merged result
+    python3 .ai-teammates/hooks/seat.py card-clean DOC-2          # after merging its branch by hand
     python3 .ai-teammates/hooks/seat.py run security-audit "Audit main..development"   # free-form, read-only seats
     python3 .ai-teammates/hooks/seat.py report
 
@@ -309,6 +310,9 @@ def main():
         cid = argv[i + 1] if len(argv) > i + 1 else ""
         pos = [x for j, x in enumerate(argv[1:], 1) if j != i and j != i + 1 and not x.startswith("--")]
         sys.exit(cardrun.run(agents, cid, pos[0] if pos else ""))
+    elif argv[0] == "land" and len(argv) >= 2:
+        import cardrun
+        sys.exit(cardrun.land(argv[1]))
     elif argv[0] == "card-clean" and len(argv) >= 2:
         import cardrun
         sys.exit(cardrun.clean(argv[1], "--abandon" in argv))

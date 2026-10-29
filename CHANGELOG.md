@@ -18,6 +18,10 @@ All notable changes to this project are documented here. The format follows
   cycles, unknown dependencies and mismatched links; the runner refuses a parent, and a child whose
   dependencies are not merged into the integration branch. `card.py tree <ID>` shows the plan;
   `card.py new --parent` links both sides (#1).
+- `seat.py land <ID>`: merges a done card in a scratch worktree, re-runs its acceptance on the
+  merged result, and fast-forwards the integration branch only if they pass. A failure leaves the
+  branch unchanged; a conflict is never resolved, and writes a `merge-conflict` record for the
+  owner. The merge commit is recorded on the card's run row (#3).
 
 ### Security
 

@@ -154,8 +154,10 @@ one card after you have split it twice. Always the review of what comes back.
 4. **Read the status line; it is facts, not the seat's word.** The runner already
    *executed* the checks: the diff, whether it stayed in scope, every acceptance
    command. `done` means all of them passed. It does not mean the work is right:
-   re-derive **one** load-bearing claim yourself, merge the branch into the
-   integration branch, then `seat.py card-clean <ID>`.
+   re-derive **one** load-bearing claim yourself, then **`seat.py land <ID>`**. It merges
+   the card in a scratch worktree, re-runs its acceptance on the merged result, and moves
+   the integration branch only if they pass; then it cleans up. A conflict is never
+   resolved for you: it stops, and the owner is asked.
 5. **`blocked`** means the seat stopped and is asking the human. Relay its ask in the
    "Stop and ask" format. Do not re-run the card until they have answered.
 

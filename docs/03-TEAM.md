@@ -106,6 +106,9 @@ The runner handles what has bitten us:
   acceptance commands, and only then commits as `seat:<name>`
 - records status, cost, branch, files and acceptance results on the run, and moves
   the board card
+- `seat.py land <ID>` merges a done card in a scratch worktree, re-runs its acceptance on
+  the merged result, and only then moves the integration branch. A failure or a conflict
+  leaves the branch as it was; a conflict is recorded for the owner, never resolved
 
 ---
 

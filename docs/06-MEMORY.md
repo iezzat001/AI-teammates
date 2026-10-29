@@ -51,7 +51,7 @@ slice a seat reads:
   mostly about retired things sink below the rest. Every hit says how old it is.
 - **Supersede / restore** a whole drawer (moved to room `superseded`, labelled, reversible).
 - **Decision records.** A merged card is filed as a decision (`memlife.py file`, or
-  automatically on `card-clean` with `memory.auto_file`, which is opt-in because it writes to
+  automatically on `card-clean` (and `land`) with `memory.auto_file`, which is opt-in because it writes to
   the shared palace). `audit` lists documents that still name a retired term and facts nobody
   has re-confirmed in 90 days.
 

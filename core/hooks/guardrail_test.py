@@ -1008,6 +1008,61 @@ def check_cards():
                and json.loads((proj / ".ai-teammates" / "cards" / "P-3.json").read_text())["parent"] == "P"
                and "P" in board_of("P-3")["note"].split())
 
+        # LANDING (issue #3): a card reaches the integration branch only after its checks pass on the MERGED
+        # result. It used to be the CTO's hand-typed `git merge`, and nothing re-ran the card's checks after it.
+        devwt = Path(td) / "proj-dev"                               # the integration checkout, as on a real install
+        g("worktree", "add", "-q", str(devwt), "development")
+        for cid in ("L-1", "L-2", "L-3", "L-4"):
+            mk(cid, acceptance=[{"run": "grep -q fixed src/a.txt && ! grep -q BROKEN src/b.txt", "why": "fixed, b intact"}])
+            go(cid, "edit_ok")
+        dev = lambda: g("rev-parse", "development").stdout.strip()
+
+        def land(cid):
+            q = subprocess.run([sys.executable, str(hooks / "seat.py"), "land", cid], cwd=proj, env=base,
+                               capture_output=True, text=True, timeout=120)
+            return q.returncode, q.stdout + q.stderr
+
+        def commit_on_dev(path, text):
+            (devwt / path).write_text(text)
+            g("commit", "-qam", f"meanwhile: {path}", cwd=devwt)
+        (devwt / "src" / "b.txt").write_text("dirty\n")
+        before = dev()
+        rc, out = land("L-1")
+        expect("land: refused while the integration checkout has uncommitted changes",
+               rc == 1 and "uncommitted" in out and dev() == before and (Path(td) / "proj-card-l-1").exists())
+        g("checkout", "--", "src/b.txt", cwd=devwt)
+        r1 = json.loads([l for l in (state / "agent_runs.jsonl").read_text().splitlines() if '"L-1"' in l][-1])
+        rc, out = land("L-1")
+        row = json.loads([l for l in (state / "agent_runs.jsonl").read_text().splitlines() if '"L-1"' in l][-1])
+        expect("land: a done card lands, its acceptance re-run on the merged result, and its worktree is cleaned",
+               rc == 0 and "1/1" in out and g("merge-base", "--is-ancestor", r1["head"], "development").returncode == 0
+               and dev() != before and bool(row.get("merged")) and not (Path(td) / "proj-card-l-1").exists()
+               and not g("status", "--porcelain", "--untracked-files=no", cwd=devwt).stdout.strip()
+               and g("rev-parse", "HEAD", cwd=devwt).stdout.strip() == dev())
+        commit_on_dev("src/b.txt", "BROKEN\n")
+        before = dev()
+        rc, out = land("L-2")
+        expect("land: a card whose acceptance FAILS after merging (the branch moved underneath it) does not land",
+               rc == 1 and "acceptance" in out and dev() == before
+               and not (Path(td) / "proj-land-l-2").exists() and (Path(td) / "proj-card-l-2").exists())
+        g("merge", "-q", "--no-ff", "-m", "manual", "feat/t-l-2", cwd=devwt)
+        cl = subprocess.run([sys.executable, str(hooks / "seat.py"), "card-clean", "L-2"], cwd=proj, env=base,
+                            capture_output=True, text=True)
+        expect("CONTROL: a manual git merge by the CTO still works, and card-clean accepts it",
+               cl.returncode == 0 and "merged" in cl.stdout and not (Path(td) / "proj-card-l-2").exists())
+        commit_on_dev("src/a.txt", "rewritten\n")
+        before = dev()
+        rc, out = land("L-3")
+        conflict = [d for f in (state / "blocked").glob("*.json") for d in [json.loads(f.read_text())]
+                    if d.get("card") == "L-3" and d.get("class") == "merge-conflict" and d.get("resolved") is None]
+        expect("land: a conflicting card does not land; the integration branch is unchanged and a BLOCKED record is written",
+               rc == 75 and dev() == before and bool(conflict) and "src/a.txt" in conflict[0]["need"]
+               and not (Path(td) / "proj-land-l-3").exists())
+        mk("L-5")
+        mk("L-4", depends_on=["L-5"])
+        rc, out = land("L-4")
+        expect("land: a card whose dependency is not merged is refused, naming it", rc == 1 and "L-5" in out and dev() == before)
+
 
 def check_seat_limits():
     """What a seat may run, enforced by the hooks and not only by its allowlist.
