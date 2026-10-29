@@ -97,7 +97,7 @@ answer actually lives.
 python3 .ai-teammates/hooks/dashboard_server.py      # http://127.0.0.1:8899; add a port number for another
 ```
 
-A local page with five tabs (Board, Branches, Team, Rules & Guardrails, Activity), served on
+A local page with six tabs (Overview, Board, Branches, Team, Rules & Guardrails, Activity), served on
 127.0.0.1 only. The page ships in `.ai-teammates/dashboard/` and is upgraded with the hooks. To
 use your own page instead, point `dashboard_dir` in `config.json` at its folder. `#team`,
 `#rules` and so on in the address open that tab.

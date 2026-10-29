@@ -1769,6 +1769,19 @@ def check_dashboard():
            g.get("production") == _config.branches()[0] and bool(g.get("current")) and bool(g.get("worktrees")))
     r = ds.rules()
     expect("rules.json: the enforced branch flow comes first", bool(r.get("groups")) and r["groups"][0]["cls"] == "enforced")
+    # the Overview lays the roster out by field, not by parsing the one-line summary
+    seats = [a for a in b.get("agents", {}).values() if a.get("kind") == "seat"]
+    expect("board.json: each teammate carries kind, model and state (the Overview's Team and gauge read them)",
+           b["agents"]["cto"].get("kind") == "cto" and bool(seats) and all(a.get("model") and "state" in a for a in seats))
+    # It runs on localhost and shows the project's state: no fonts, scripts or images from elsewhere.
+    # (2026-10-28: the design it was modelled on loaded Google Fonts.)
+    page = Path(__file__).resolve().parents[1] / "dashboard" / "index.html"
+    if page.exists():
+        import re as _re
+        text = page.read_text(encoding="utf-8")
+        ext = [u for u in _re.findall(r"(?:https?:)?//[\w.-]+\.[a-z]{2,}[^\s\"')]*", text)
+               if not u.startswith("http://www.w3.org/")]          # the SVG namespace name is not a request
+        expect("the shipped page requests nothing from another host" + (f" (found: {ext[0][:60]})" if ext else ""), not ext)
 
 
 def check_session_end():

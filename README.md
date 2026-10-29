@@ -105,10 +105,11 @@ the teammate specs, your config and the hooks' event log:
 python3 .ai-teammates/hooks/dashboard_server.py     # then open http://127.0.0.1:8899
 ```
 
-![The dashboard's Board tab: task cards in todo, doing, review and done, each with the runner's facts](docs/images/dashboard-board.png)
+![The dashboard's Overview: open work with the cards in flight, who holds it, guard blocks, branch, memory, cards waiting for review, activity, team and branches](docs/images/dashboard-overview.png)
 
 | Tab | What it shows |
 |---|---|
+| **Overview** | One screen: open cards and what's in flight, who holds the work (and how much is delegated to seats), what the guards refused, the current branch, whether memory is capturing, what waits for your review, activity over the day, each teammate's activity, and unmerged branches. |
 | **Board** | Every task card by column, with the facts of its last run: files, acceptance results, time, cost, branch. |
 | **Branches** | Worktrees and branches, what each has that `main` doesn't, and where you are. Computed per request, never cached. |
 | **Team** | You, the CTO and each teammate: model, where it runs, its last run, its open cards. |
@@ -120,6 +121,9 @@ files, and whether memory capture is actually working.
 
 <details>
 <summary><b>Screenshots of the other tabs</b></summary>
+
+**Board**
+![Board tab: task cards in todo, doing, review and done, each with the runner's facts and the teammate that holds it](docs/images/dashboard-board.png)
 
 **Branches**
 ![Branches tab: three worktrees with "you are here" on development, and five branches with unmerged counts](docs/images/dashboard-git.png)

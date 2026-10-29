@@ -117,7 +117,8 @@ def git_state():
 # that never existed, a branch flow the hooks no longer enforce. They are now
 # GENERATED from the sources the guardrails themselves read - the agent specs
 # seat.py launches, config.json, and RULES.md - so they cannot disagree.
-COLOURS = ["#D8482A", "#6BB6FF", "#7A5FB5", "#C97A1B", "#2E8B57", "#9A6B3F"]
+# Chosen to read on the dashboard's black background (2026-10-28 redesign); a spec's own `colour:` wins.
+COLOURS = ["#FF6A3D", "#A9B2FF", "#FFB37A", "#7CE3A8", "#FF8AC2", "#8FD8FF"]
 
 
 def _esc(s) -> str:
@@ -162,8 +163,8 @@ def team() -> dict:
             except Exception:
                 continue
     # config.json "owner": the human the CTO reports to (shown on the Team panel)
-    out = {"owner": {"label": _config.load().get("owner") or "Owner", "colour": "#1F1B16", "reports_to": None,
-                     "role": "Owner. Approves production deploys, spend and secrets."}}
+    out = {"owner": {"label": _config.load().get("owner") or "Owner", "colour": "#FFFFFF", "reports_to": None,
+                     "role": "Owner. Approves production deploys, spend and secrets.", "kind": "owner"}}
     for i, name in enumerate(sorted(specs, key=lambda n: (n != "cto", n))):
         a = dict(specs[name])
         a["model"] = _model(name, a)
@@ -175,12 +176,15 @@ def team() -> dict:
         else:
             state = "never run" if name != "cto" else "runs when you start `cto`"
         ro = " · read-only" if a.get("read_only") == "true" else ""
+        where = ("the integration checkout" if name == "cto" else
+                 "cards run in their own worktree" if a.get("writes") == "true" else a.get("worktree", "."))
+        # `role` is the one-line summary; the same facts as fields, for a page that lays them out
         out[name] = {"label": a.get("seat", name), "colour": a.get("colour") or COLOURS[i % len(COLOURS)],
                      "reports_to": "owner" if name == "cto" else "cto",
-                     "role": f"{a.get('harness', '?')} + {a.get('model', '?')} · "
-                             + ("the integration checkout" if name == "cto" else
-                                f"cards run in their own worktree" if a.get("writes") == "true" else a.get("worktree", "."))
-                             + f"{ro} · {state}"}
+                     "role": f"{a.get('harness', '?')} + {a.get('model', '?')} · {where}{ro} · {state}",
+                     "kind": "cto" if name == "cto" else "seat", "harness": a.get("harness", "?"),
+                     "model": a.get("model", "?"), "where": where, "read_only": a.get("read_only") == "true",
+                     "state": state, "running": name in live}
     return out
 
 
