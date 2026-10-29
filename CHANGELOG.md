@@ -32,6 +32,10 @@ All notable changes to this project are documented here. The format follows
   by folder. A split that leaves a parent file uncovered, or lets two unordered siblings edit the
   same file, is refused; `card.py check` applies the same checks to a parent, and prints the
   exact `split` command for an oversized card (#2).
+- Delegation policy: `config.json` `delegation.cto_product_edits` (`allow`, the default; `ask`; or
+  `block`) applies to the CTO's own product-code edits in any checkout, by edit or by shell write.
+  Seats and merge-conflict resolution are exempt. `seat.py report --delegation [--days N]` shows
+  product lines that reached the integration branch per day, by seats versus by the CTO (#5).
 
 ### Security
 

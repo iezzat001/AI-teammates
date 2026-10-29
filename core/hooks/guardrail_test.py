@@ -562,6 +562,56 @@ def check_guard():
         for desc, got, want in cases:
             (ok if got == want else bad)(f"guard: CTO edits {desc} -> {got}" + ("" if got == want else f", expected {want}"))
 
+        # DELEGATION POLICY (issue #5): nothing forced delegation. MEASURED 2026-10-17: on one large owner
+        # request the CTO delegated two cards and wrote 982 of 1,252 product lines itself, in a feature
+        # worktree, where no rule applies. The owner now chooses: allow (as before), ask, or block.
+        feat = Path(td) / "p-feat"
+        policy = lambda v: [(w / ".ai-teammates" / "config.json").write_text(json.dumps(
+            {"protected_branches": ["main", "development"], **({"delegation": {"cto_product_edits": v}} if v else {})}))
+            for w in (dev_wt, feat)]
+        verdicts = {}
+        for v in ("allow", "ask", "block"):
+            policy(v)
+            verdicts[v] = edit(feat / "src" / "a.ts")
+        expect = lambda desc, cond: (ok if cond else bad)(f"guard: delegation: {desc}")
+        expect("a CTO edit to a product file in a feature worktree follows the policy: allow / ask / block "
+               f"(got {verdicts})", verdicts == {"allow": "allow", "ask": "ask", "block": "block"})
+        q = subprocess.run([sys.executable, str(script)], cwd=dev_wt, env={**env, "CLAUDE_AGENT_NAME": "cto"},
+                           input=json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(feat / "src" / "a.ts")}}),
+                           capture_output=True, text=True)
+        expect("...and the block says to write a card", "card.py new" in q.stderr)
+        expect("with block, a shell write to a product file is refused too",
+               bash("echo x > ../p-feat/src/a.ts") == "block" and bash("sed -i s/a/b/ ../p-feat/src/a.ts") == "block")
+        expect("CONTROL: with block, reading a product file and writing a doc are not refused",
+               bash("cat ../p-feat/src/a.ts") == "allow" and edit(feat / "docs" / "x.md") == "allow")
+        cardf = Path(td) / "card.json"
+        cardf.write_text(json.dumps({"id": "X-1", "scope": {"edit": ["src/a.ts"]}}))
+        seat_says = {}
+        for v in ("allow", "ask", "block"):
+            policy(v)
+            q = subprocess.run([sys.executable, str(script)], cwd=feat, input=json.dumps(
+                {"tool_name": "Edit", "tool_input": {"file_path": str(feat / "src" / "a.ts")}}), capture_output=True,
+                text=True, env={**env, "CLAUDE_AGENT_NAME": "tester", "AI_TEAMMATES_SEAT": "Tester",
+                                "AI_TEAMMATES_CARD": str(cardf)})
+            seat_says[v] = "block" if q.returncode == 2 else "ask" if '"ask"' in q.stdout else "allow"
+        expect(f"a seat's edit inside its card scope is unaffected by every policy (got {seat_says})",
+               set(seat_says.values()) == {"allow"})
+        # conflict resolution while a merge is in progress is not authoring product code
+        pm = Path(td) / "p-merge"
+        sh("worktree", "add", "-q", "-b", "feat/m", str(pm))
+        for w, text in ((pm, "m\n"), (feat, "x\n")):
+            (w / "src").mkdir(exist_ok=True)
+            (w / "src" / "a.ts").write_text(text)
+            sh("add", "src/a.ts", cwd=w)
+            sh("commit", "-qm", "a", cwd=w)
+        sh("merge", "feat/x", cwd=pm)
+        policy("block")
+        expect("conflict resolution during a merge is allowed under block",
+               sh("rev-parse", "-q", "--verify", "MERGE_HEAD", cwd=pm).returncode == 0 and edit(pm / "src" / "a.ts") == "allow")
+        policy("")
+        expect("CONTROL: with no delegation key, a CTO edit in a feature worktree is allowed as before",
+               edit(feat / "src" / "a.ts") == "allow")
+
 
 def check_loopguard():
     """Does the stop-and-ask guard trip on a human-only loop, and ONLY on that?
@@ -1144,6 +1194,48 @@ def check_cards():
         expect("CONTROL: a card within the limits is not touched by split, and checks as before",
                rc == 1 and (proj / ".ai-teammates" / "cards" / "T-2.json").read_text() == before
                and cli("check", "T-2")[0] == 0 and not (proj / ".ai-teammates" / "cards" / "T-2a.json").exists())
+
+
+def check_delegation_report():
+    """`seat.py report --delegation`: how much product code reached the integration branch through cards
+    (commits by seat:*) and how much the CTO wrote itself. MEASURED 2026-10-17 by hand: 982 of 1,252 lines
+    by the CTO; the owner had no report showing it."""
+    print("\n  DELEGATION REPORT — product lines by seats versus by the CTO")
+    import os
+    import shutil
+    import tempfile
+    from datetime import datetime, timedelta
+    here = Path(__file__).resolve().parent
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td) / "proj"
+        (proj / ".ai-teammates").mkdir(parents=True)
+        shutil.copytree(here, proj / ".ai-teammates" / "hooks", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        (proj / ".ai-teammates" / "config.json").write_text(json.dumps({"protected_branches": ["main", "development"]}))
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
+        g = lambda *a, **e: subprocess.run([GIT, *a], cwd=proj, env={**env, **e}, capture_output=True, text=True)
+        g("init", "-q", "-b", "development")
+        g("config", "user.email", "t@t"); g("config", "user.name", "owner")
+
+        def commit(who, files, when=None):
+            for f, n in files.items():
+                (proj / f).parent.mkdir(parents=True, exist_ok=True)
+                (proj / f).write_text("".join(f"line {i}\n" for i in range(n)))
+                g("add", f)
+            e = {"GIT_AUTHOR_NAME": who, "GIT_COMMITTER_NAME": who}
+            if when:
+                e.update(GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
+            g("commit", "-qm", f"by {who}", **e)
+        g("add", "-A"); g("commit", "-qm", "install")
+        commit("seat:ui-developer", {"src/x.ts": 3})
+        commit("cto", {"src/y.ts": 5, "docs/z.md": 40})                  # the doc is not product code
+        commit("cto", {"src/old.ts": 7}, (datetime.now() - timedelta(days=100)).strftime("%Y-%m-%dT10:00:00"))
+        p = subprocess.run([sys.executable, str(proj / ".ai-teammates" / "hooks" / "seat.py"), "report", "--delegation",
+                            "--days", "30"], cwd=proj, env=env, capture_output=True, text=True)
+        total = next((l for l in p.stdout.splitlines() if l.strip().startswith("total")), "")
+        nums = [int(x) for x in re.findall(r"\b\d+\b", total)]
+        (ok if p.returncode == 0 and nums[:3] == [3, 5, 62] else bad)(
+            f"delegation report: seat lines versus CTO lines match the fixture history (3 / 5, 62% by the CTO; "
+            f"docs and commits older than --days left out): got {total.strip() or p.stdout.strip()[-200:] or p.stderr[-200:]}")
 
 
 def check_seat_limits():
@@ -2079,7 +2171,7 @@ def main():
     print(f"  {len(s)} seats defined")
     for check, args in ((check_static, (s,)), (check_tracked, ()), (check_hook, ()), (check_models, (s,)),
                         (check_parity, ()), (check_parity_rules, ()), (check_guard, ()), (check_loopguard, ()),
-                        (check_cards, ()), (check_seat_limits, ()), (check_memory, ()), (check_memslice, ()),
+                        (check_cards, ()), (check_delegation_report, ()), (check_seat_limits, ()), (check_memory, ()), (check_memslice, ()),
                         (check_memlife, ()), (check_fact_review, ()), (check_launcher, ()),
                         (check_board_digest, ()), (check_dashboard, ()), (check_session_end, ()), (check_scrubber, ()),
                         (check_prepush, ())):

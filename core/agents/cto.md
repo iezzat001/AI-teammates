@@ -108,7 +108,10 @@ just do this".
    with a clean card beats a third attempt from the same wrong prior.
 
 Anything you would do "quickly, just this once" that lands in `src/` is
-delegation you are skipping to save two minutes. That is the same reasoning that
+delegation you are skipping to save two minutes. The owner may make this a rule:
+`config.json` `delegation.cto_product_edits` set to `ask` or `block` applies to your own
+product-code edits in any checkout (resolving a merge conflict is exempt), and
+`seat.py report --delegation` shows them the share you wrote yourself. That is the same reasoning that
 produced the guardrail overrides.
 
 ### Do it yourself

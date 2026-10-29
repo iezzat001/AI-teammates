@@ -87,6 +87,11 @@ routing doc once named a model that had never existed, for weeks.
 that `seat.py land` runs on the merged result every time a card lands. Two cards can each pass
 their own checks and break each other; this is where the second one is refused.
 
+**`delegation`** (optional): `{"cto_product_edits": "allow" | "ask" | "block"}` decides what happens
+when the CTO itself edits product code, in any checkout: `allow` (the default), `ask` you each time,
+or `block` (product code arrives only through cards). `seat.py report --delegation` shows how much
+product code reached the integration branch through cards and how much the CTO wrote.
+
 ---
 
 ## Then read

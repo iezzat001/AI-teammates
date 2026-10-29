@@ -8,6 +8,7 @@
     python3 .ai-teammates/hooks/seat.py card-clean DOC-2          # after merging its branch by hand
     python3 .ai-teammates/hooks/seat.py run security-audit "Audit main..development"   # free-form, read-only seats
     python3 .ai-teammates/hooks/seat.py report
+    python3 .ai-teammates/hooks/seat.py report --delegation [--days N]   # product lines: seats vs the CTO
 
 Two things this exists to answer:
 
@@ -31,7 +32,7 @@ import shlex
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -299,6 +300,39 @@ def cmd_report():
     print("  total_cost_usd; absent for runs on other harnesses.")
 
 
+def cmd_delegation(days: int):
+    """Product-code lines that reached the integration branch in the last N days, per day: by seats
+    (commits authored seat:*, which is how the card runner commits) and by everyone else. Merges are
+    left out: landing a card is not writing it. MEASURED 2026-10-17 by hand: 982 of 1,252 lines were
+    the CTO's own, and the owner had no report that showed it."""
+    # Filtered here, not with --since: git stops walking at the first commit older than --since, so one
+    # old-dated commit on top (a cherry-pick, a rebase) hid everything below it. FOUND writing its test.
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
+    out = subprocess.run([GIT_BIN, "log", BASE, "--no-merges", "--numstat", "--date=short",
+                          "--format=@%ad %an", "--", *_config.guarded()],
+                         cwd=str(REPO), capture_output=True, text=True).stdout
+    per, day, who = {}, "", ""
+    for line in out.splitlines():
+        if line.startswith("@"):
+            day, who = line[1:].split(" ", 1)
+            who = "seat" if who.startswith("seat:") else "cto"
+        elif line.strip() and day >= since:
+            a, d = (line.split("\t") + ["0", "0"])[:2]
+            n = (int(a) if a.isdigit() else 0) + (int(d) if d.isdigit() else 0)
+            per.setdefault(day, {"seat": 0, "cto": 0})[who] += n
+    print(f"  product lines ({', '.join(_config.guarded())}) that reached {BASE}, last {days} days")
+    print(f"  {'day':<12} {'seats':>7} {'cto':>7} {'cto %':>6}")
+    tot = {"seat": 0, "cto": 0}
+    for d in sorted(per):
+        s, c = per[d]["seat"], per[d]["cto"]
+        tot["seat"] += s
+        tot["cto"] += c
+        print(f"  {d:<12} {s:>7} {c:>7} {100 * c // max(s + c, 1):>5}%")
+    s, c = tot["seat"], tot["cto"]
+    print(f"  {'total':<12} {s:>7} {c:>7} {100 * c // max(s + c, 1):>5}%")
+    print("\n  seats = commits by seat:* (card runs); cto = every other author. Merges are not counted.")
+
+
 def main():
     agents = load_agents()
     argv = sys.argv[1:]
@@ -322,6 +356,9 @@ def main():
         sys.exit(cardrun.clean(argv[1], "--abandon" in argv))
     elif argv[0] == "run" and len(argv) >= 2:
         sys.exit(cmd_run(agents, argv[1], " ".join(argv[2:]) or "(no task given)"))
+    elif argv[0] == "report" and "--delegation" in argv:
+        i = argv.index("--days") if "--days" in argv else -1
+        cmd_delegation(int(argv[i + 1]) if 0 <= i < len(argv) - 1 and argv[i + 1].isdigit() else 30)
     elif argv[0] == "report":
         cmd_report()
     else:

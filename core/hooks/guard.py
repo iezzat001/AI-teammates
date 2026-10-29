@@ -548,6 +548,59 @@ def check_frontend_edit(tool, ti):
     )
 
 
+def _product_file(p):
+    """(checkout, path) when p is a product file (guarded, not edit_exempt) of this repository, else None."""
+    try:
+        loc = _locate(p)
+    except Exception:
+        loc = False
+    if loc is None:
+        return None
+    top, rel = (loc[0], loc[1]) if loc else (REPO, rel_path(p))
+    if not rel.startswith(_config.guarded()) or any(re.search(x, rel) for x in _config.load()["edit_exempt"]):
+        return None
+    return top, rel
+
+
+def check_delegation(tool, ti):
+    """The owner's policy for the CTO writing product code itself: config.json
+    "delegation": {"cto_product_edits": "allow" | "ask" | "block"}, allow when unset.
+
+    MEASURED 2026-10-17: on one large owner request the CTO delegated two cards and wrote 982 of
+    1,252 product lines itself (78%), in a feature worktree it made, where no rule applied; the
+    "delegate when" rules in cto.md are advice to the model. The CTO's session only: a seat works
+    inside its card's scope. Resolving a conflict while a merge is in progress is not authoring."""
+    policy = (_config.load().get("delegation") or {}).get("cto_product_edits") or "allow"
+    if policy not in ("ask", "block") or os.environ.get("CLAUDE_AGENT_NAME") != "cto" \
+            or os.environ.get("AI_TEAMMATES_SEAT") or os.environ.get("AI_TEAMMATES_CARD"):
+        return
+    hit, how = None, "edits"
+    if tool in ("Edit", "Write", "NotebookEdit", "MultiEdit"):
+        hit = _product_file(str(ti.get("file_path") or ti.get("path") or ti.get("notebook_path") or ""))
+    elif tool == "Bash":
+        for blank, w, raw in _parts(str(ti.get("command") or "")):
+            why = _write_reason(blank, w)
+            if why:
+                words = [x for r in raw for x in re.split(r"[<>|&]+", r) if x and not x.startswith("-")]
+                hit = next((f for f in (_product_file(x) for x in words[1:]) if f), None)
+                how = "would change, because %s," % why
+            if hit:
+                break
+    if not hit:
+        return
+    top, rel = hit
+    if subprocess.run([GIT, "-C", str(top), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                      capture_output=True).returncode == 0:
+        return
+    msg = ("This %s %s, product code. The owner's delegation policy (config.json delegation."
+           "cto_product_edits = %s) says product code reaches the project through cards." % (how, rel, policy))
+    if policy == "ask":
+        ask("delegation-policy", msg + " Approve to let the CTO write it itself this time.")
+    block("delegation-policy", msg,
+          "Write a card for it: python3 .ai-teammates/hooks/card.py new <ID> --seat <seat> ..., then "
+          "seat.py run --card <ID> and seat.py land <ID>. Resolving a merge conflict is allowed.")
+
+
 # `git push`, also as `git -C dir push` / `git -c k=v push`.
 _PUSH = r"\bgit\b(?:\s+-[Cc]\s+\S+)*\s+push\b"
 # git's own commands: an alias of the same name is ignored by git, so these are never looked up
@@ -785,7 +838,7 @@ def check_git(tool, ti):
 
 
 HANDLERS = (check_blocked_gate, check_card_scope, check_card_shell, check_seat_denies,
-            check_guardrail_files, check_frontend_edit, check_git)
+            check_guardrail_files, check_frontend_edit, check_delegation, check_git)
 
 
 def main():
