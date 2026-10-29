@@ -36,6 +36,13 @@ All notable changes to this project are documented here. The format follows
   `block`) applies to the CTO's own product-code edits in any checkout, by edit or by shell write.
   Seats and merge-conflict resolution are exempt. `seat.py report --delegation [--days N]` shows
   product lines that reached the integration branch per day, by seats versus by the CTO (#5).
+- `cto setup` (also `ai-teammates setup`): the choices a project makes once after install. Memory
+  (claude-mem, MemPalace or both, scoped to the project, with the install commands of what is
+  missing), the team (the CTO's model; per seat keep or drop, harness and model; the model per card
+  tier, optionally verified with one call each), and scope (branches, product paths, delegation
+  policy, integration checks). `--yes` and `--answers` for scripts. It refuses inside an agent
+  session, and the guard asks the owner when an agent runs it. A dropped seat stays dropped on
+  upgrade. `06-MEMORY.md` records the decision to keep both memory systems and how to set them up.
 
 ### Removed
 

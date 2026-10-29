@@ -117,6 +117,12 @@ The runner handles what has bitten us:
 
 ---
 
+## Choosing the team
+
+`cto setup` keeps or drops each seat (a dropped one moves to `.ai-teammates/agents/off/` and an
+upgrade leaves it there), sets each seat's harness and model in its spec, and the model per card
+tier (`seat_models`). Cards run only on Claude Code seats.
+
 ## Adding a teammate
 
 Only when a real task does not fit an existing role. Then:

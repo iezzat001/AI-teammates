@@ -459,6 +459,11 @@ def shell_guardrail_write(cmd):
     for blank, w, raw in _parts(_HEREDOC.sub(lambda m: m.group(0).split("\n", 1)[0], cmd)):
         if not w:
             continue
+        # `cto setup` rewrites config.json and the seat specs, and running a hook script is otherwise
+        # exempt below: an agent could have changed every setting through it without asking
+        if (w[0] in ("cto", "ai-teammates") and w[1:2] == ["setup"]) \
+                or any(x.endswith(".ai-teammates/hooks/setup.py") for x in raw):
+            return ".ai-teammates/config.json"
         words = list(raw)
         if w[0] in ("python", "python3") and len(w) > 1 and w[1].startswith(".ai-teammates/hooks/") \
                 and w[1].endswith(".py"):

@@ -552,6 +552,10 @@ def check_guard():
             ("config.json, by sed -i", bash("sed -i '' s/5/20/ .ai-teammates/config.json"), "ask"),
             ("config.json, by a redirect", bash("echo '{}' > .ai-teammates/config.json"), "ask"),
             ("config.json, by git checkout of an older copy", bash("git checkout HEAD~3 -- .ai-teammates/config.json"), "ask"),
+            # setup rewrites config.json and the seat specs, and running a hook script is otherwise exempt
+            ("config.json, by cto setup", bash("cto setup --yes"), "ask"),
+            ("config.json, by running setup.py", bash("python3 .ai-teammates/hooks/setup.py --yes --no-doctor"), "ask"),
+            ("config.json, by ai-teammates setup", bash("ai-teammates setup --answers a.json"), "ask"),
             ("CONTROL: a product file in a feature worktree", edit(Path(td) / "p-feat" / "src" / "a.ts"), "allow"),
             ("CONTROL: reading config.json", bash("cat .ai-teammates/config.json | python3 -m json.tool"), "allow"),
             ("CONTROL: running a hook script", bash("python3 .ai-teammates/hooks/card.py check X-1"), "allow"),
@@ -1236,6 +1240,96 @@ def check_delegation_report():
         (ok if p.returncode == 0 and nums[:3] == [3, 5, 62] else bad)(
             f"delegation report: seat lines versus CTO lines match the fixture history (3 / 5, 62% by the CTO; "
             f"docs and commits older than --days left out): got {total.strip() or p.stdout.strip()[-200:] or p.stderr[-200:]}")
+
+
+def check_setup():
+    """`cto setup`: the one place a new project chooses memory, team and scope.
+
+    install.sh asks nothing, and memory was configured by no step at all: memslice refused to attach a
+    slice (scoping is mandatory) and a new owner learned that only when the CTO first tried. Executed
+    here on a copy of this installation: defaults, an answers file, the prompts, model checks, refusal."""
+    print("\n  SETUP — does `cto setup` write the choices, and only the owner can run it?")
+    import os
+    import shutil
+    import tempfile
+    here = Path(__file__).resolve().parent
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td) / "proj"
+        ai = proj / ".ai-teammates"
+        ai.mkdir(parents=True)
+        shutil.copytree(here, ai / "hooks", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        shutil.copytree(REPO / ".ai-teammates" / "agents", ai / "agents")
+        base_cfg = {"project": "proj", "protected_branches": ["main", "development"], "guarded_paths": ["src/"],
+                    "cards": {"max_edit_files": 4}, "memory": {"retired": ["old-term"]}}
+        (ai / "config.json").write_text(json.dumps(base_cfg))
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
+        for k in ("CLAUDE_AGENT_NAME", "AI_TEAMMATES_SEAT", "AI_TEAMMATES_CARD", "AI_TEAMMATES_CLAUDE_BIN"):
+            env.pop(k, None)
+        subprocess.run([GIT, "init", "-q", "-b", "main"], cwd=proj, env=env, capture_output=True)
+        expect = lambda desc, cond: (ok if cond else bad)(f"setup: {desc}")
+        cfg = lambda: json.loads((ai / "config.json").read_text())
+        spec = lambda name: (ai / "agents" / f"{name}.md").read_text() if (ai / "agents" / f"{name}.md").exists() else ""
+
+        def setup(*args, stdin="", **extra):
+            return subprocess.run([sys.executable, str(ai / "hooks" / "setup.py"), *args], cwd=proj, input=stdin,
+                                  env={**env, **extra}, capture_output=True, text=True, timeout=120)
+
+        p = setup("--yes")
+        c = cfg()
+        expect("--yes configures BOTH memories, scoped to this project, MemPalace first",
+               p.returncode == 0 and c.get("memory", {}).get("default") == "mempalace"
+               and c["memory"].get("mempalace_wing") == "proj" and c["memory"].get("claude_mem_projects") == ["proj"])
+        expect("CONTROL: what setup does not ask about is kept (card limits, retired terms)",
+               c.get("cards") == {"max_edit_files": 4} and c["memory"].get("retired") == ["old-term"]
+               and c["guarded_paths"] == ["src/"] and "seat_models" not in c and "delegation" not in c)
+        if not (Path.home() / ".claude-mem" / "settings.json").exists():
+            expect("...and prints the install command of a memory that is not installed",
+                   "npx claude-mem install" in p.stdout)
+
+        answers = Path(td) / "answers.json"
+        answers.write_text(json.dumps({
+            "memory": "claude-mem", "cto_model": "m-cto",
+            "seats": {"backend": {"keep": False}, "ui-developer": {"model": "m-ui"}, "security-audit": {"model": "m-audit"}},
+            "seat_models": {"hard": "m-hard"}, "guarded_paths": ["src/", "api/"], "delegation": "ask",
+            "integration_checks": ["npm test"]}))
+        p = setup("--answers", str(answers))
+        c = cfg()
+        expect("an answers file sets memory, the CTO model, tier models and scope",
+               p.returncode == 0 and c["memory"].get("default") == "claude-mem" and "mempalace_wing" not in c["memory"]
+               and c["cto"]["model"] == "m-cto" and c.get("seat_models") == {"hard": "m-hard"}
+               and c["guarded_paths"] == ["src/", "api/"] and c.get("delegation") == {"cto_product_edits": "ask"}
+               and c.get("integration_checks") == ["npm test"])
+        expect("a dropped seat leaves the team (kept in agents/off/) and a seat's model is changed in its spec",
+               not spec("backend") and (ai / "agents" / "off" / "backend.md").exists()
+               and re.search(r"^model: m-ui$", spec("ui-developer"), re.M))
+        expect("...and a launch line's --model follows the seat's model",
+               "--model m-audit" in spec("security-audit") and "--model claude-sonnet" not in spec("security-audit"))
+
+        before = (ai / "config.json").read_text()
+        p = setup("--yes", CLAUDE_AGENT_NAME="cto")
+        expect("refused inside an agent session (the CTO's or a seat's), and nothing is written",
+               p.returncode == 2 and "owner" in p.stdout and (ai / "config.json").read_text() == before)
+
+        p = setup("--ask", stdin="bogus\nnone\n" + "\n" * 40)
+        c = cfg()
+        expect("asked: a wrong answer is asked again, and 'none' removes the memory scope but keeps the rest",
+               p.returncode == 0 and "one of:" in p.stdout and "default" not in c.get("memory", {})
+               and c.get("memory", {}).get("retired") == ["old-term"])
+
+        stub = Path(td) / "claude"
+        stub.write_text("#!/bin/sh\n[ \"$2\" = good-model ] || [ \"$2\" = claude-haiku-4-5-20251001 ] || "
+                        "[ \"$2\" = claude-sonnet-5-5 ] || [ \"$2\" = claude-opus-5-5 ] || [ \"$2\" = m-ui ] || "
+                        "[ \"$2\" = m-audit ] || [ \"$2\" = m-cto ] || [ \"$2\" = m-hard ]\n")
+        stub.chmod(0o755)
+        before = (ai / "config.json").read_text()
+        answers.write_text(json.dumps({"seat_models": {"hard": "no-such-model"}}))
+        p = setup("--answers", str(answers), "--verify-models", AI_TEAMMATES_CLAUDE_BIN=str(stub))
+        expect("--verify-models: a model that does not answer is named and nothing is written",
+               p.returncode == 1 and "no-such-model" in p.stdout and (ai / "config.json").read_text() == before)
+        answers.write_text(json.dumps({"seat_models": {"hard": "good-model"}}))
+        p = setup("--answers", str(answers), "--verify-models", AI_TEAMMATES_CLAUDE_BIN=str(stub))
+        expect("--verify-models: when every model answers, the choice is written",
+               p.returncode == 0 and cfg().get("seat_models") == {"hard": "good-model"})
 
 
 def check_seat_limits():
@@ -2171,7 +2265,7 @@ def main():
     print(f"  {len(s)} seats defined")
     for check, args in ((check_static, (s,)), (check_tracked, ()), (check_hook, ()), (check_models, (s,)),
                         (check_parity, ()), (check_parity_rules, ()), (check_guard, ()), (check_loopguard, ()),
-                        (check_cards, ()), (check_delegation_report, ()), (check_seat_limits, ()), (check_memory, ()), (check_memslice, ()),
+                        (check_cards, ()), (check_delegation_report, ()), (check_setup, ()), (check_seat_limits, ()), (check_memory, ()), (check_memslice, ()),
                         (check_memlife, ()), (check_fact_review, ()), (check_launcher, ()),
                         (check_board_digest, ()), (check_dashboard, ()), (check_session_end, ()), (check_scrubber, ()),
                         (check_prepush, ())):

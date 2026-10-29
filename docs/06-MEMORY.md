@@ -6,6 +6,25 @@ step that depended on someone remembering to do it.
 
 ---
 
+## Decision 2026-10-29: keep both
+
+Both systems stay, because they solve different halves: claude-mem **captures** without anyone
+remembering to, and MemPalace **finds** (rank 1 for 82% of questions where claude-mem returned the
+answer in its top 5 for none; `tools/memory-bench/results/2026-10-02-pilot.md`). Slices default to
+MemPalace; `memslice.py search "<query>" --from claude-mem` reaches the other. `cto setup` configures both by
+default. The sections further down that call claude-mem the one store are SUPERSEDED by this.
+
+**Setting them up on a new project** (`cto setup` prints exactly what is missing):
+
+```bash
+npx claude-mem install                 # captures every Claude Code session, by lifecycle hooks
+uv tool install mempalace              # or: pipx install mempalace
+mempalace init ~/code/your-project     # the palace; the project's wing is config memory.mempalace_wing
+cto setup                              # writes the memory block, scoped to this project
+```
+
+`cto --doctor` then says whether claude-mem is *capturing*, not only installed.
+
 ## Status 2026-10-02: the choice is open, and seats never touch memory
 
 Everything below the next heading describes the memory history up to 2026-09-25, when
@@ -139,6 +158,9 @@ Settings: `~/.claude-mem/settings.json`.
 
 ## Why this one
 
+SUPERSEDED 2026-10-29: both systems are kept (the decision at the top). What follows is why
+claude-mem was adopted on 2026-09-25; its capture argument still holds.
+
 **Capture is not a step anyone can forget.** It is a lifecycle hook, not a
 discipline. Every previous design failed at exactly the point where a human or
 an agent had to remember to write something down.
@@ -155,6 +177,9 @@ Index-then-fetch keeps it affordable enough to actually use.
 memory that only writes at clean exit would have lost all three.
 
 **One store.** After killing a dual-write setup, the rule is one source of truth.
+SUPERSEDED 2026-10-29: there are two stores again, but not a dual write: claude-mem captures
+sessions, MemPalace holds what is filed (facts, decision records), and nothing writes the same
+thing to both.
 
 ---
 

@@ -4,6 +4,7 @@
 #   cto                 interactive session — you talk, it works, you talk again
 #   cto "do the thing"  one task, headless, exits when done
 #   cto --doctor        check the environment and leave
+#   cto setup           choose memory, team and scope once after install (then runs --doctor)
 #
 # Runs from anywhere inside the project. Pre-flight happens before you type.
 
@@ -18,6 +19,14 @@ HOOKS="$CFG/hooks"
 # Claude Code runs from REPO, whatever directory `cto` was started in: its
 # project settings and hook paths are resolved from the session's directory.
 cd "$REPO"
+
+# One-time choices after install. The owner's: setup.py refuses inside an agent session.
+if [ "${1:-}" = "setup" ]; then
+  shift
+  python3 "$HOOKS/setup.py" "$@" || exit $?
+  case " $* " in *" --no-doctor "*) exit 0 ;; esac
+  exec "$0" --doctor
+fi
 
 # The CTO works where work is authored: the integration checkout. Started on
 # the production branch it can commit nothing (the flow guard blocks it), so on
