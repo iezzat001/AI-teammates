@@ -16,6 +16,7 @@ Answers file (every key optional):
      "mempalace_wing": "<wing>", "claude_mem_projects": ["<name>", ...],
      "cto_model": "<model id or default>",
      "seats": {"backend": {"keep": false}, "ui-developer": {"model": "<id>", "harness": "claude-code"}},
+         (a seat by the `name:` in its spec, not its file name; an unknown one refuses, changing nothing)
      "seat_models": {"mechanical": "<id>", "standard": "<id>", "hard": "<id>"},
      "production_branch": "main", "integration_branch": "development",
      "guarded_paths": ["src/"], "delegation": "allow" | "ask" | "block",
@@ -189,6 +190,24 @@ def step_team(ask, cfg: dict) -> tuple:
     return sorted(m for m in models if m), dropped
 
 
+def unknown_seats(answers: dict) -> str:
+    """Why the answers name a seat that is not there, or "" when they do not.
+
+    FOUND 2026-10-29: `"seats": {"backend": {"keep": false}}` in a project whose backend.md is named
+    backend-<db> matched no seat and was skipped without a word, so the owner believed a seat dropped
+    that still ran. Checked before anything is written: a seat is chosen by its spec's `name:`."""
+    import seat
+    named = sorted(n for n, s in seat.load_agents().items() if s.get("orchestrator") != "true")
+    seats = answers.get("seats") or {}
+    wrong = sorted(set(seats) - set(named)) if isinstance(seats, dict) else ["(seats is not an object)"]
+    if not wrong:
+        return ""
+    files = {Path(s["_path"]).stem: n for n, s in seat.load_agents().items() if n in named}
+    hints = "".join(f"\n    {w}.md is the seat named {files[w]}" for w in wrong if w in files)
+    return (f"  setup: no seat named {', '.join(wrong)}; nothing was changed. The seats here: {', '.join(named)}"
+            f" (a seat is chosen by the `name:` in its spec){hints}")
+
+
 def verify_models(models: list) -> list:
     """The models that do not answer. A model id that never existed sat in the routing doc for weeks."""
     claude = os.environ.get("AI_TEAMMATES_CLAUDE_BIN", "claude")
@@ -242,6 +261,10 @@ def main(argv) -> int:
         except (IndexError, OSError, ValueError) as e:
             print(f"  setup: cannot read the answers file ({type(e).__name__}: {e})")
             return 1
+    unknown = unknown_seats(answers)
+    if unknown:
+        print(unknown)
+        return 1
     ask = Asker(answers, ("--ask" in argv or sys.stdin.isatty()) and "--yes" not in argv)
     cfg = json.loads(CONFIG.read_text(encoding="utf-8")) if CONFIG.exists() else {}
     before = json.dumps(cfg, sort_keys=True)
