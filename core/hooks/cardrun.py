@@ -3,6 +3,7 @@
 
     python3 .ai-teammates/hooks/seat.py run <seat> --card <ID>     (dispatches here)
     python3 .ai-teammates/hooks/seat.py land <ID>                   merge it, checked on the merged result
+    python3 .ai-teammates/hooks/seat.py verify <PARENT>             the whole outcome, once every child landed
     python3 .ai-teammates/hooks/seat.py card-clean <ID> [--abandon]
 
 What this replaces: `seat.py run <seat> "<one line>"`, which launched a harness and
@@ -514,13 +515,29 @@ def _drop(wt: Path) -> None:
     git("worktree", "prune")
 
 
+def checks_on(wt: Path, card: dict, extra=()) -> tuple:
+    """Run the card's acceptance, then the project's extra checks, in wt: (results, '' or what failed)."""
+    err = run_setup(wt)
+    if err:
+        return [], err
+    own = list(card.get("acceptance") or [])
+    acc = cardmod.run_acceptance({"acceptance": own + [{"run": x} for x in extra]}, wt)
+    for i, a in enumerate(acc):
+        if a["rc"] != 0:
+            what = "acceptance" if i < len(own) else "integration check"
+            return acc, f"{what} failed on the merged result: {a['run'][:60]} (exit {a['rc']}): {a['tail'][-100:]}"
+    return acc, ""
+
+
 def land(cid: str) -> int:
     """Merge a done card into BASE only if its checks pass on the MERGED result.
 
     It used to be the CTO typing `git merge` (cto.md step 4), and nothing re-ran the card's checks
     after it: the card's worktree was cut from BASE when it started, and BASE may have moved since.
     The merge happens in a scratch worktree; BASE moves only when everything passed there, so a
-    failure or a conflict leaves it exactly as it was. A conflict is never resolved here."""
+    failure or a conflict leaves it exactly as it was. A conflict is never resolved here.
+    config.json "integration_checks" run there too: two cards can each pass alone and break each
+    other, and this is where the second one is caught. Landing a parent's last child verifies it."""
     try:
         card = cardmod.load(cid)
     except Exception as e:
@@ -560,13 +577,8 @@ def land(cid: str) -> int:
         elif m.returncode != 0:
             reason = f"merge failed: {(m.stderr or m.stdout).strip()[:120]}"
         else:
-            reason = run_setup(scratch)
-            acc = [] if reason else cardmod.run_acceptance(card, scratch)
-            failed = [a for a in acc if a["rc"] != 0]
-            if failed:
-                reason = (f"acceptance failed on the merged result: {failed[0]['run'][:60]} "
-                          f"(exit {failed[0]['rc']}): {failed[0]['tail'][-100:]}")
-            elif not reason:
+            acc, reason = checks_on(scratch, card, _config.load().get("integration_checks") or [])
+            if not reason:
                 sha = git("rev-parse", "HEAD", cwd=scratch).stdout.strip()
                 adv = (git("merge", "--ff-only", "-q", sha, cwd=co) if co
                        else git("update-ref", f"refs/heads/{BASE}", sha, tip))
@@ -583,14 +595,58 @@ def land(cid: str) -> int:
         annotate(cid, merged=sha, land=facts)
         board.set_state(cid, "done", f"landed {facts['ts'][:16]}Z: {sha[:8]} on {BASE}, "
                                      f"acceptance {passed}/{len(acc)} on the merged result")
-        print(f"  LANDED {cid}: {br} merged into {BASE} @ {sha[:8]} · acceptance {passed}/{len(acc)} on the merged result")
-        return clean(cid, False)
+        print(f"  LANDED {cid}: {br} merged into {BASE} @ {sha[:8]} · checks {passed}/{len(acc)} on the merged result")
+        rc, par = clean(cid, False), card.get("parent")
+        try:
+            kids = cardmod.load(par).get("children") or [] if par else []
+        except Exception:
+            kids = []
+        if kids and all(merged(k) for k in kids):
+            print(f"  {cid} was the last child of {par} to land: verifying the whole outcome")
+            return verify(par) or rc
+        return rc
     annotate(cid, land=facts)
     board.set_state(cid, "blocked", f"land {facts['ts'][:16]}Z: {status} | {reason}"[:300])
     print(f"  NOT LANDED {cid}: {reason}\n  {BASE} is unchanged.")
     if status == "blocked":
         print("  The conflict is the owner's to resolve; it is recorded for the next session.")
     return EXIT.get(status, 1)
+
+
+def verify(pid: str) -> int:
+    """A parent card's acceptance (the whole outcome) on BASE, once every child has landed.
+
+    Each card's checks run in its own worktree, and nothing used to check the merged whole: the only
+    git hook judges branch rules, not behaviour. Pass: the parent is done. Fail: it is not, and the
+    board names the failing command; the fix is a new child card."""
+    try:
+        card = cardmod.load(pid)
+    except Exception as e:
+        sys.exit(f"{e}")
+    waiting = [k for k in card.get("children") or [] if not merged(k)]
+    refuse = (f"{pid} is not a parent card (seat.py land checks one card)" if not cardmod.is_parent(card)
+              else f"{pid} has no acceptance: nothing proves the whole outcome" if not card.get("acceptance")
+              else f"{', '.join(waiting)} not merged into {BASE} yet" if waiting else "")
+    if refuse:
+        print(f"  cannot verify {pid}: {refuse}. Nothing was run.")
+        return 1
+    scratch = REPO.parent / f"{REPO.name}-verify-{pid.lower()}"
+    _drop(scratch)
+    r = git("worktree", "add", "--detach", str(scratch), BASE)
+    if r.returncode != 0:
+        sys.exit(f"could not create the scratch worktree {scratch}:\n{r.stderr.strip()}")
+    try:
+        acc, reason = checks_on(scratch, card)
+    finally:
+        _drop(scratch)
+    passed, ts = sum(1 for a in acc if a["rc"] == 0), now_iso()[:16]
+    if reason:
+        board.set_state(pid, "blocked", f"verify {ts}Z: failed | {reason}"[:300])
+        print(f"  VERIFY FAILED {pid}: {reason}\n  The parent is not done. Write a child card that fixes it.")
+        return 1
+    board.set_state(pid, "done", f"verify {ts}Z: whole outcome {passed}/{len(acc)} on {BASE}")
+    print(f"  VERIFIED {pid}: whole outcome {passed}/{len(acc)} on {BASE}. The parent is done.")
+    return 0
 
 
 if __name__ == "__main__":

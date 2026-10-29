@@ -22,6 +22,10 @@ All notable changes to this project are documented here. The format follows
   merged result, and fast-forwards the integration branch only if they pass. A failure leaves the
   branch unchanged; a conflict is never resolved, and writes a `merge-conflict` record for the
   owner. The merge commit is recorded on the card's run row (#3).
+- The combined result is checked: `config.json` `integration_checks` run on the merged result
+  every time a card lands, and `seat.py verify <parent>` runs a parent card's acceptance on the
+  integration branch once every child has landed (automatically after the last). The parent is
+  done only when it passes (#4).
 
 ### Security
 

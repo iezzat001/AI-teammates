@@ -83,6 +83,10 @@ default model until you name one; see [04-ROUTING](04-ROUTING.md) for the measur
 Verify a model id resolves before you configure it (`claude --model <id> -p hi`). Our own
 routing doc once named a model that had never existed, for weeks.
 
+**`integration_checks`** (optional): project commands, such as `["npm run typecheck", "npm test"]`,
+that `seat.py land` runs on the merged result every time a card lands. Two cards can each pass
+their own checks and break each other; this is where the second one is refused.
+
 ---
 
 ## Then read

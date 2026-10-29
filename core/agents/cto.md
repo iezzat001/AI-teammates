@@ -158,6 +158,9 @@ one card after you have split it twice. Always the review of what comes back.
    the card in a scratch worktree, re-runs its acceptance on the merged result, and moves
    the integration branch only if they pass; then it cleans up. A conflict is never
    resolved for you: it stops, and the owner is asked.
+   When a parent's last child lands, `land` runs **`seat.py verify <parent>`**: the
+   parent's own acceptance, the whole outcome, on the integration branch. A parent is
+   done only when that passes. If it fails, write a new child card that fixes it.
 5. **`blocked`** means the seat stopped and is asking the human. Relay its ask in the
    "Stop and ask" format. Do not re-run the card until they have answered.
 

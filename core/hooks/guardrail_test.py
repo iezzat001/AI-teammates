@@ -701,6 +701,9 @@ if mode in ("edit_ok", "acc_fail", "denied_then_ok"):
     open("src/a.txt", "a").write("fixed\n"); tool("src/a.txt")
 elif mode == "edit_outside":
     open("src/b.txt", "a").write("oops\n"); tool("src/b.txt")
+elif mode == "write":
+    for p, t in json.loads(os.environ["STUB_WRITES"]).items():
+        open(p, "w").write(t); tool(p)
 elif mode == "blocked":
     text = "BLOCKED: auth | log in to the staging service"
 elif mode == "loop":
@@ -1024,7 +1027,8 @@ def check_cards():
 
         def commit_on_dev(path, text):
             (devwt / path).write_text(text)
-            g("commit", "-qam", f"meanwhile: {path}", cwd=devwt)
+            g("add", path, cwd=devwt)
+            g("commit", "-qm", f"meanwhile: {path}", cwd=devwt)
         (devwt / "src" / "b.txt").write_text("dirty\n")
         before = dev()
         rc, out = land("L-1")
@@ -1062,6 +1066,49 @@ def check_cards():
         mk("L-4", depends_on=["L-5"])
         rc, out = land("L-4")
         expect("land: a card whose dependency is not merged is refused, naming it", rc == 1 and "L-5" in out and dev() == before)
+
+        # THE COMBINED RESULT (issue #4): two cards can each pass alone and break each other. K-1 renames
+        # the export and updates every caller it can see; K-2, written against the old name, adds a caller.
+        commit_on_dev("src/api.txt", "name=old\n")
+        commit_on_dev("src/use.txt", "uses=old\n")
+        commit_on_dev("check.sh", 'n=$(cut -d= -f2 src/api.txt)\nfor f in src/use*.txt; do grep -qx "uses=$n" "$f" '
+                                  '|| { echo "$f does not use $n"; exit 1; }; done\n')
+        cfg = proj / ".ai-teammates" / "config.json"
+        cfg_orig = cfg.read_text()
+        subprocess.run([sys.executable, str(hooks / "card.py"), "new", "K", "--seat", "tester"], cwd=proj, env=base,
+                       capture_output=True)
+        mk("K", children=["K-1", "K-2"], goal="every caller uses the renamed export",
+           acceptance=[{"run": "grep -qx name=new src/api.txt && sh check.sh", "why": "renamed, and every caller follows"}])
+        mk("K-1", parent="K", scope={"edit": ["src/api.txt", "src/use.txt"]},
+           acceptance=[{"run": "grep -qx name=new src/api.txt && grep -qx uses=new src/use.txt"}])
+        mk("K-2", parent="K", scope={"edit": ["src/use2.txt"]}, acceptance=[{"run": "grep -qx uses=old src/use2.txt"}])
+        _, k1 = go("K-1", "write", STUB_WRITES=json.dumps({"src/api.txt": "name=new\n", "src/use.txt": "uses=new\n"}))
+        _, k2 = go("K-2", "write", STUB_WRITES=json.dumps({"src/use2.txt": "uses=old\n"}))
+        cfg.write_text(json.dumps({**json.loads(cfg_orig), "integration_checks": ["sh check.sh"]}))
+        rc1, _ = land("K-1")
+        verify = lambda pid: subprocess.run([sys.executable, str(hooks / "seat.py"), "verify", pid], cwd=proj, env=base,
+                                            capture_output=True, text=True, timeout=120)
+        v = verify("K")
+        expect("verify: refused while a child has not landed, naming it",
+               k1 and k2 and k1["status"] == k2["status"] == "done" and rc1 == 0
+               and v.returncode == 1 and "K-2" in v.stdout and board_of("K")["status"] != "done")
+        before = dev()
+        rc, out = land("K-2")
+        expect("integration checks: a card that passes alone but breaks another is refused when it lands; "
+               "the integration branch is unchanged", rc == 1 and "sh check.sh" in out and dev() == before)
+        cfg.write_text(cfg_orig)
+        rc, out = land("K-2")
+        expect("verify: with no integration checks, the parent's whole-outcome check fails after the last child "
+               "lands, and the parent is not done",
+               dev() != before and rc == 1 and "K" in out and board_of("K")["status"] != "done"
+               and "sh check.sh" in board_of("K")["note"])
+        mk("K", children=["K-1", "K-2", "K-3"], goal="every caller uses the renamed export",
+           acceptance=[{"run": "grep -qx name=new src/api.txt && sh check.sh", "why": "renamed, and every caller follows"}])
+        mk("K-3", parent="K", scope={"edit": ["src/use2.txt"]}, acceptance=[{"run": "grep -qx uses=new src/use2.txt"}])
+        go("K-3", "write", STUB_WRITES=json.dumps({"src/use2.txt": "uses=new\n"}))
+        rc, out = land("K-3")
+        expect("verify: after a fix child lands, the parent's check passes and the parent is done",
+               rc == 0 and board_of("K")["status"] == "done")
 
 
 def check_seat_limits():

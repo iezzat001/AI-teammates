@@ -108,7 +108,10 @@ The runner handles what has bitten us:
   the board card
 - `seat.py land <ID>` merges a done card in a scratch worktree, re-runs its acceptance on
   the merged result, and only then moves the integration branch. A failure or a conflict
-  leaves the branch as it was; a conflict is recorded for the owner, never resolved
+  leaves the branch as it was; a conflict is recorded for the owner, never resolved.
+  `config.json` `integration_checks` run there too, every time a card lands
+- `seat.py verify <parent>` runs a parent card's acceptance (the whole outcome) on the
+  integration branch once every child has landed; `land` runs it after the last one
 
 ---
 
