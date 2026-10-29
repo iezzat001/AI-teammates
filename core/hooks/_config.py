@@ -4,7 +4,7 @@
 Every hook used to carry its own hardcoded branch names and path prefixes. That
 was fine for one project and is wrong for a portable system - and it also let
 two hooks disagree: `guard.py` guarded `src/` while `prepush.py` guarded `src/`
-AND `vps-backend/`, so backend code could be edited from the main checkout and
+AND `backend/`, so backend code could be edited from the main checkout and
 only caught later at push time, if at all.
 
 One file, read by all of them. If config.json is missing or unreadable, fall
@@ -143,7 +143,7 @@ def mem_capture() -> dict:
     db = Path(s.get("CLAUDE_MEM_DATA_DIR") or home) / "claude-mem.db"
 
     # FOUND 2026-10-02: the numbers below were a GLOBAL max, so any project's activity
-    # (this very session's worktree) turned ContentOS green while it had captured nothing
+    # (this very session's worktree) turned the pilot project green while it had captured nothing
     # since 09-10; and the worker's own failure to STORE (a missing column, 10,386 errors
     # since 08-03) was never consulted. So: this project's rows, and the worker's recent
     # persist errors. claude-mem names a project by folder, a worktree as "repo/worktree".

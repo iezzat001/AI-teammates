@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Task cards: the only thing a seat ever sees.
 
-WHY (measured on ContentOS, 2026-10-02). Eight seat runs in a month, five of 94
-board cards delegated. The delegated ones were feature-sized ("read SCOUT_SPEC.md
-and build /scout", 15-25 minutes), board cards were post-mortems written after
+WHY (measured on the pilot project, 2026-10-02). Eight seat runs in a month, five of 94
+board cards delegated. The delegated ones were feature-sized ("read SEARCH_SPEC.md
+and build /search", 15-25 minutes), board cards were post-mortems written after
 the work (median note 348 characters), and nothing linked a card to a run. The
 one build that went well had a 108-line brief with the schema, file:line
 pointers, numbered steps and checkable done-criteria. That is a ticket. This
@@ -192,8 +192,8 @@ def is_parent(card: dict) -> bool:
 def plan_problems(card: dict, known=None) -> list:
     """What is wrong with the links between this card and the others in its plan.
 
-    FOUND 2026-10-17: the owner asked for one large outcome, the CTO wrote BOUND-1 and BOUND-2 and
-    later queued BOUND-3, and their relationship lived only in board prose. A card is cut from the
+    FOUND 2026-10-17: the owner asked for one large outcome, the CTO wrote two cards for it and
+    later queued a third, and their relationship lived only in board prose. A card is cut from the
     integration branch when it starts, so one that needs another's work must not start before that
     work has landed; the runner can refuse that only if the dependency is written down."""
     cid, par, bad = card.get("id"), card.get("parent"), []

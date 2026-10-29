@@ -17,7 +17,6 @@ Overrides - both logged to .ai-teammates/events.jsonl:
   anything: AI_TEAMMATES_OVERRIDE='<why>' set by the HUMAN when launching the
             session. It is the harness's environment, so an agent cannot set it
             from inside - prefixing a command with it does nothing.
-            (CONTENTOS_OVERRIDE is still read, as the legacy name.)
 """
 import json
 import os
@@ -59,7 +58,7 @@ SESSION_ID = ""      # set from the hook payload in main(); loopguard keys its c
 def block(rule, message, fix):
     log("blocked", {"rule": rule, "message": message})
     # Counted: a block that fires before the tool runs produces no failure event,
-    # so a retry-rephrase-retry loop against a guard was invisible. On ContentOS a
+    # so a retry-rephrase-retry loop against a guard was invisible. On the pilot project a
     # block led to the human being asked 1 time in 10, and once to an edit of
     # guard.py itself.
     try:
@@ -216,8 +215,8 @@ def _commands(cmd, depth=0):
     """Every command this line would RUN: each simple command, plus what a shell (-c), eval,
     xargs, npx, find -exec or a $(...) substitution is told to run. Arguments are not commands.
 
-    FOUND 2026-10-04 by the ContentOS CTO: the first version tried every word as a possible
-    command start, with quoted text read as code. With `supabase*` in ContentOS's denies,
+    FOUND 2026-10-04 by the pilot project's CTO: the first version tried every word as a possible
+    command start, with quoted text read as code. With `supabase*` in the project's denies,
     `grep -rn "supabase" src/` became the command `supabase src/`, and the read-only audit seat
     could not read the product's whole auth layer: refused three times per run, no verdict.
     A guard that fires on ordinary work gets worked around (failure-catalogue #8). The bypass
@@ -451,7 +450,7 @@ def shell_guardrail_write(cmd):
     A file the line merely NAMES is not a write (`cat config.json`, `python3 .ai-teammates/hooks/card.py`
     runs a hook, it does not change one). It counts when the same simple command writes (a redirect,
     sed -i, cp, git checkout, ...) or is an interpreter, and when an interpreter is fed a heredoc that
-    names one: that is how the ContentOS CTO edited JSON files."""
+    names one: that is how the pilot project's CTO edited JSON files."""
     for m in _HEREDOC.finditer(cmd):
         line = cmd[cmd.rfind("\n", 0, m.start()) + 1:m.start()]
         head = [w for _, w, _ in _parts(line) if w]
@@ -497,8 +496,8 @@ def check_guardrail_files(tool, ti):
 def check_frontend_edit(tool, ti):
     """Product code is edited on a feature branch, never in the main checkout.
 
-    SUPERSEDED 2026-09-06: the old rule was "UI work routes through Lovable
-    MCP". Lovable was dropped from production on 2026-08-25; the block stayed
+    SUPERSEDED 2026-09-06: the old rule was "UI work routes through the
+    UI builder's MCP". The UI builder was dropped from production on 2026-08-25; the block stayed
     and its advice pointed at a tool that no longer exists.
 
     What the rule protects: guarded paths (config "guarded_paths") get edited
@@ -852,7 +851,7 @@ def main():
     tool = payload.get("tool_name") or payload.get("tool") or ""
     ti = payload.get("tool_input") or {}
 
-    override = os.environ.get("AI_TEAMMATES_OVERRIDE") or os.environ.get("CONTENTOS_OVERRIDE")
+    override = os.environ.get("AI_TEAMMATES_OVERRIDE")
     if override:
         log("override", {"tool": tool, "reason": override[:200]})
         sys.exit(0)

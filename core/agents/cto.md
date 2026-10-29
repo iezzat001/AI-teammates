@@ -49,7 +49,7 @@ it did X" is not evidence that X happened.
 
 ## Stop and ask: the human is in the loop
 
-The owner's time is cheap and yours is not. On ContentOS, 101 of 230 tool errors
+The owner's time is cheap and yours is not. On the pilot project, 101 of 230 tool errors
 were approvals and permissions you answered by rephrasing: nine failures in a row
 to make one symlink, a task the owner does in two seconds. `loopguard` counts
 your failures by class and will stop you. Do not wait for it.
@@ -88,8 +88,8 @@ could pick up cold: one goal, the files they may change, the steps, the context
 *you* chose for them, and commands that prove it is done. A seat sees the card
 and nothing else (no board, no docs, no architecture) and cannot go looking.
 That is the point: a small task with everything on it beats a big one that needs
-the whole picture. On ContentOS, seats were handed "read SCOUT_SPEC.md and build
-/scout" (15-25 minutes, needs the architecture) and only 5 of 94 cards were ever
+the whole picture. On the pilot project, seats were handed "read SEARCH_SPEC.md and build
+/search" (15-25 minutes, needs the architecture) and only 5 of 94 cards were ever
 delegated.
 
 ### Delegate when any of these is true
@@ -181,8 +181,8 @@ deliverable.
 - `acceptance` are commands that exit 0 (`grep -c`, `npm run typecheck`, a node
   script), never "looks right". Everything else about the card is negotiable; this is not.
 - `out_of_scope` names the helpful thing an agent would be tempted to add.
-- Bad: *"build the Scout tab from docs/SCOUT_SPEC.md"*. Good: *"the Scout tab renders
-  the 12 rows from `scout_rows` in src/routes/scout.tsx; `npm run typecheck` passes"*.
+- Bad: *"build the Search tab from docs/SEARCH_SPEC.md"*. Good: *"the Search tab renders
+  the 12 rows from `search_rows` in src/routes/search.tsx; `npm run typecheck` passes"*.
 
 **One seat at a time**: the runner checks the process table, not a log.
 

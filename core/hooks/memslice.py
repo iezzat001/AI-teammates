@@ -26,10 +26,10 @@ how old it is. Those labels reach the seat inside the slice text.
 
 Scoping is mandatory. config.json "memory":
     {"default": "mempalace",
-     "mempalace_wing": "contentos",
-     "claude_mem_projects": ["ContentOS", "ContentOS/ContentOS-dev"]}
+     "mempalace_wing": "acme-notes",
+     "claude_mem_projects": ["acme-notes", "acme-notes/acme-notes-dev"]}
 Unset = refuse. An unfiltered MemPalace query surfaced another wing's memory as
-the top hit on ContentOS (measured), and the personal wing shares that palace.
+the top hit on the pilot project (measured), and the personal wing shares that palace.
 """
 import argparse
 import json

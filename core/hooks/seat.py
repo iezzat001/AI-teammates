@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import _config  # noqa: E402
 # Seat branches start from the integration branch: the flow is
 # feature -> integration -> production, and a seat branched off production
-# skips the branch it must merge into (ContentOS, 2026-09-18).
+# skips the branch it must merge into (the pilot project, 2026-09-18).
 BASE = _config.branches()[1] or _config.branches()[0]
 GIT_BIN = "/usr/bin/git" if Path("/usr/bin/git").exists() else "git"
 AGENTS = REPO / ".ai-teammates" / "agents"

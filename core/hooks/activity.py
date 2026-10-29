@@ -22,7 +22,7 @@ EVENTS = _config.state_dir() / "events.jsonl"
 MAX_LINES = 2000  # keep the file bounded; the dashboard only shows recent work
 
 # Widened 2026-08-23 after a kimi-k3 audit found the original missed two
-# formats this repo actually uses: Supabase JWTs (eyJ...) and Google/Gemini
+# common formats: Supabase JWTs (eyJ...) and Google/Gemini
 # keys (AIza...). Either would have landed unredacted in events.jsonl.
 SECRET = re.compile(
     r"("

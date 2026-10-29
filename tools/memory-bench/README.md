@@ -17,6 +17,6 @@ python3 tools/memory-bench/bench.py clean    # remove the benchmark data again
 Needs MemPalace and a running claude-mem worker. `load` and `clean` write to both stores
 under an isolated `bench-<project>` name, never to your project's own wing.
 
-[results/2026-10-02-contentos.md](results/2026-10-02-contentos.md) is the run that informed
+[results/2026-10-02-pilot.md](results/2026-10-02-pilot.md) is the run that informed
 [docs/06-MEMORY.md](../../docs/06-MEMORY.md). Results from one codebase do not transfer to
 another: measure your own.

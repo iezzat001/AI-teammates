@@ -37,6 +37,10 @@ All notable changes to this project are documented here. The format follows
   Seats and merge-conflict resolution are exempt. `seat.py report --delegation [--days N]` shows
   product lines that reached the integration branch per day, by seats versus by the CTO (#5).
 
+### Removed
+
+- The legacy `CONTENTOS_OVERRIDE` variable; `AI_TEAMMATES_OVERRIDE` is the one override.
+
 ### Security
 
 Gaps found by an analysis of the guardrails, each now executed by the test suite and seen to fail

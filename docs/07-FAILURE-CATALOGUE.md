@@ -20,7 +20,7 @@ a check like this *passes*. It manufactures confidence.
 | Guardrail test "passing" | Grepped `prepush.py` **source** for a string | Whether the code actually blocks anything at runtime |
 | `api.py` "md5-verified in git" | Compared a file md5 to itself | That the file was in **no commit on any branch**. `git cat-file -t <that hash>` → "Not a valid object name". Five production files existed only on the server. |
 | Hook features "measured" | Split transcripts on `\n` and `.!?` | Arabic speech-to-text returns neither. Every feature measured the whole transcript. One "3.69x lift" was actually 0.84x — refuted. |
-| Secret rotation "complete" | Checked the VPS and Workers | `.env.local` was never updated. Local 401s for a day. |
+| Secret rotation "complete" | Checked the server and the hosted functions | `.env.local` was never updated. Local 401s for a day. |
 | Scrape returned `scanned: 0` | `except: return []` | An HTTP 402. A billing outage looked like an empty result set for an hour. |
 | Deploy "succeeded" | wrangler exit code | The bundle had no Supabase config baked in. Every visitor saw "Something broke". |
 | Proxy "not an open relay" | Path allowlist | The allowlist restricts *which* endpoints, never *who*. Anyone on the internet could write to user data. |
@@ -39,7 +39,7 @@ not the config that fed it.
 ## 2. Editing the wrong function — **3 times**
 
 `text.rindex("return {")` matched the *last* such string in a 900-line file
-three separate times. Once it silently broke `POST /scout/seeds` for every
+three separate times. Once it silently broke `POST /notes/import` for every
 caller and left a cache permanently unwritten.
 
 **Rule.** Anchor edits on unique surrounding context, never on a positional
@@ -93,8 +93,8 @@ status is not evidence of output — check the output.
 ## 7. Stale docs mislead agents exactly like people
 
 A deploy doc named a branch that had not existed for eleven days. An error
-message told users to "Connect Supabase in Lovable Cloud" two weeks after
-Lovable was removed — the one message a broken deploy shows, pointing at a
+message told users to "Connect the database in the UI builder" two weeks after
+the UI builder was removed — the one message a broken deploy shows, pointing at a
 product that was gone. A routing table listed a model `ollama list` does not
 have.
 

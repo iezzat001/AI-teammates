@@ -7,7 +7,7 @@
     python3 .ai-teammates/hooks/seat.py card-clean <ID> [--abandon]
 
 What this replaces: `seat.py run <seat> "<one line>"`, which launched a harness and
-recorded `clean = exit 0 and no guard hits`. On ContentOS that marked a seat that
+recorded `clean = exit 0 and no guard hits`. On the pilot project that marked a seat that
 changed nothing as clean, joined a whole spec into one string, never linked a run
 to a board card, reused one scratch worktree forever, and could not stop a run.
 

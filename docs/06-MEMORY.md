@@ -19,7 +19,7 @@ CTO decides what travels with a task: `memslice.py search "<query>"` previews it
 systems, so the choice of store can change without touching the cards. Scoping is
 mandatory (`config.json` `memory`: a MemPalace wing, claude-mem projects); unset is
 refused, because an unscoped MemPalace query returned another wing's memory as the top
-hit on ContentOS.
+hit on the pilot project.
 
 **claude-mem was silently not storing anything for two months, and the check said OK.**
 Its database lacked three columns its own worker writes (`retry_count`,
@@ -28,7 +28,7 @@ Its database lacked three columns its own worker writes (`retry_count`,
 another project's activity kept it green. It is now per project and counts the
 worker's store errors (`_config.mem_capture`, with a regression test).
 
-**Head-to-head on ContentOS** (`tools/memory-bench/results/2026-10-02-contentos.md`).
+**Head-to-head on the pilot project** (`tools/memory-bench/results/2026-10-02-pilot.md`).
 On identical documents MemPalace put the answer at rank 1 for 82% of questions; claude-mem
 returned it in its top 5 for none of 11, and for only 6 of 25 of its *own* observations.
 claude-mem is cheaper and faster per call; MemPalace captures nothing automatically.
@@ -63,7 +63,7 @@ it is not ours to rewrite. Executed checks (32, against a throwaway palace) are 
 failed, because that id names the room it came from, not `superseded`.
 
 **Status 2026-10-06: what changed gets recorded (fact review).** In real use (2026-10-02 to
-10-05) claude-mem captured 268 ContentOS observations on its own, and MemPalace gained nothing:
+10-05) claude-mem captured 268 observations from the pilot project on its own, and MemPalace gained nothing:
 the CTO moved Gemini from Vertex to an API key and no fact said so. A store of current truth stays
 current only if someone writes to it, and on this project every design that depended on someone
 remembering has failed. So a hook asks, at the moment it matters:

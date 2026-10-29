@@ -149,7 +149,7 @@ def check_claude_seat(name, a):
     elif mode not in SAFE_CLAUDE_MODES:
         bad(f"{name}: unrecognised --permission-mode {mode}")
     # FOUND 2026-10-06: the read-only audit seat inherited every MCP server of the owner's setup,
-    # write-capable ones included (Drive, Lovable, Canva), and all 24 tools: cost on every audit,
+    # write-capable ones included (Drive, a UI builder, Canva), and all 24 tools: cost on every audit,
     # and a "read-only" seat offered tools that write.
     elif "--strict-mcp-config" not in hl or not tm or offered & {"Edit", "Write", "NotebookEdit", "Task", "Skill"}:
         bad(f"{name}: read-only seat not isolated: its headless command needs --strict-mcp-config and "
@@ -352,7 +352,7 @@ def check_models(all_seats):
 def parity(repo: Path, prod: str, integ: str) -> list:
     """[(worktree, verdict, detail)] for every OTHER worktree: ok | behind | fail.
 
-    FOUND 2026-10-03 by the ContentOS CTO: the production checkout (on `main`) failed this
+    FOUND 2026-10-03 by the pilot project's CTO: the production checkout (on `main`) failed this
     check after every framework upgrade until the next promotion, because the upgrade lands on
     the integration branch first, as it must. A failure that is guaranteed between every
     upgrade and every promotion is the rule that cannot be satisfied and gets ignored
@@ -458,7 +458,7 @@ def check_guard():
     script = REPO / ".ai-teammates" / "hooks" / "guard.py"
     with tempfile.TemporaryDirectory() as td:
         env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
-        for k in ("AI_TEAMMATES_OVERRIDE", "CONTENTOS_OVERRIDE"):
+        for k in ("AI_TEAMMATES_OVERRIDE"):
             env.pop(k, None)
         main_wt, dev_wt = Path(td) / "p", Path(td) / "p-dev"
         sh = lambda *a, cwd=main_wt: subprocess.run([GIT, *a], cwd=cwd, env=env,
@@ -630,7 +630,7 @@ def check_loopguard():
         return
     with tempfile.TemporaryDirectory() as td:
         base = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
-        for k in ("AI_TEAMMATES_OVERRIDE", "CONTENTOS_OVERRIDE", "AI_TEAMMATES_HEADLESS",
+        for k in ("AI_TEAMMATES_OVERRIDE", "AI_TEAMMATES_HEADLESS",
                   "AI_TEAMMATES_CARD"):
             base.pop(k, None)
         g = lambda *a: subprocess.run([GIT, *a], cwd=td, env=base, capture_output=True, text=True)
@@ -769,7 +769,7 @@ emit({"type": "result", "subtype": "success", "is_error": False, "num_turns": 2,
 def check_cards():
     """Is a card run judged by what can be CHECKED, not by what the seat says?
 
-    ContentOS recorded `clean` for a seat that changed nothing, and nothing could
+    The pilot project recorded `clean` for a seat that changed nothing, and nothing could
     stop a run or tie it to a card. Executed here with a stub standing in for
     `claude`, covering exactly those cases: no change, edits outside scope, an
     acceptance check that fails, a hang, a human-only block, and a card too big
@@ -787,7 +787,7 @@ def check_cards():
         proj = Path(td) / "proj"
         proj.mkdir()
         base = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
-        for k in ("AI_TEAMMATES_OVERRIDE", "CONTENTOS_OVERRIDE", "AI_TEAMMATES_HEADLESS", "AI_TEAMMATES_CARD"):
+        for k in ("AI_TEAMMATES_OVERRIDE", "AI_TEAMMATES_HEADLESS", "AI_TEAMMATES_CARD"):
             base.pop(k, None)
         g = lambda *a, cwd=proj: subprocess.run([GIT, *a], cwd=cwd, env=base, capture_output=True, text=True)
         g("init", "-q", "-b", "main")
@@ -882,7 +882,7 @@ def check_cards():
                "a.txt says fixed" in av[2] and "grep -q fixed src/a.txt" not in av[2]
                and "card.py accept" in av[2])
 
-        # the failure shapes that cost money on ContentOS
+        # the failure shapes that cost money on the pilot project
         mk("T-2")
         p, r = go("T-2", "noop")
         expect("a seat that changes nothing is NOT clean (was recorded clean)",
@@ -1004,7 +1004,7 @@ def check_cards():
                scope(f"{wt2}/src/a.txt", card="/nonexistent/card.json") == 2)
 
         # PLANS (issue #1): the plan for a big task lives in a parent card, not only in the CTO's context.
-        # FOUND 2026-10-17: BOUND-1..3 were linked only by board prose, and nothing refused a card
+        # FOUND 2026-10-17: three cards for one outcome were linked only by board prose, and nothing refused a card
         # started before the card whose work it needed had landed.
         def cli(*a):
             q = subprocess.run([sys.executable, str(hooks / "card.py"), *a], cwd=proj, env=base,
@@ -1241,7 +1241,7 @@ def check_delegation_report():
 def check_seat_limits():
     """What a seat may run, enforced by the hooks and not only by its allowlist.
 
-    FOUND 2026-10-03 by the security-audit seat, auditing this framework before ContentOS
+    FOUND 2026-10-03 by the security-audit seat, auditing this framework before the pilot project
     promoted it: (A) a card's `allow` went into --allowedTools unchecked, and the live scope
     check watched edit tools only, so a card granting `Bash(cat:*)` let a seat write any file
     through the shell; (B) config.json required_denies (git push, rm -rf, ssh) was asserted by
@@ -1285,12 +1285,12 @@ def check_seat_limits():
 
     with tempfile.TemporaryDirectory() as td:
         base = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
-        for k in ("AI_TEAMMATES_OVERRIDE", "CONTENTOS_OVERRIDE", "AI_TEAMMATES_HEADLESS", "AI_TEAMMATES_CARD",
+        for k in ("AI_TEAMMATES_OVERRIDE", "AI_TEAMMATES_HEADLESS", "AI_TEAMMATES_CARD",
                   "AI_TEAMMATES_SEAT", "CLAUDE_AGENT_NAME"):
             base.pop(k, None)
         subprocess.run([GIT, "init", "-q", "-b", "development"], cwd=td, env=base, capture_output=True)
         (Path(td) / ".ai-teammates").mkdir()
-        # ContentOS's real list: the project adds the Supabase and Wrangler CLIs to the defaults
+        # the pilot project's real list: the project adds the Supabase and Wrangler CLIs to the defaults
         (Path(td) / ".ai-teammates" / "config.json").write_text(json.dumps({
             "protected_branches": ["main", "development"],
             "required_denies": ["git push*", "rm -rf*", "ssh*", "wrangler*", "supabase*"]}))
@@ -1351,7 +1351,7 @@ def check_seat_limits():
 
         seat_env = {"AI_TEAMMATES_SEAT": "Tester", "CLAUDE_AGENT_NAME": "tester"}
         denied = ["git push origin feat", "git -C . push", "git --no-pager -c a=b push origin", "cd /tmp && rm -rf foo",
-                  "ssh vps 'ls'", "sudo rm -rf /x", "bash -c 'git push origin x'", "supabase db push",
+                  "ssh prod 'ls'", "sudo rm -rf /x", "bash -c 'git push origin x'", "supabase db push",
                   "npx supabase db push", "npx -y wrangler deploy", "sh -c \"supabase db push\"",
                   "echo x | xargs supabase db push", "find . -name x -exec rm -rf {} +", "eval git push"]
         res = {c: guard(c, **seat_env) for c in denied}
@@ -1359,7 +1359,7 @@ def check_seat_limits():
                all(rc == 2 and "seat-deny" in err for rc, err in res.values()))
         # FOUND 2026-10-28 (repo analysis): quoting or escaping the command word, a full path, or another
         # order of rm's flags walked past the deny list
-        denied = ['"git" push origin x', "\\git push origin x", "g''it push origin x", "/usr/bin/ssh vps true",
+        denied = ['"git" push origin x', "\\git push origin x", "g''it push origin x", "/usr/bin/ssh prod true",
                   "rm -fr build", "rm -r -f build", "rm --recursive --force build", "rm -Rf build",
                   "sudo -u root rm -rf /x", "env -i git push origin x", "nice -n 5 git push origin x"]
         res = {c: guard(c, **seat_env) for c in denied}
@@ -1387,7 +1387,7 @@ def check_memory():
 
     It said OK for eight days while nothing was kept (it asked the worker, which was
     fine), then again on 2026-10-02 because it took a GLOBAL max: another project's
-    activity, this very session's worktree, made ContentOS look healthy while it had
+    activity, this very session's worktree, made the pilot project look healthy while it had
     captured nothing since 09-10, and the worker was failing to store anything at all.
     Executed against a fake $HOME holding a claude-mem database and log."""
     print("\n  MEMORY — does the capture check tell the truth?")
@@ -1530,7 +1530,7 @@ def check_memslice():
 def check_memlife():
     """Does memory stay TRUE as the project changes, or only grow?
 
-    FOUND 2026-10-03: the slice built for a ContentOS card still told the seat the UI seat was
+    FOUND 2026-10-03: the slice built for a pilot-project card still told the seat the UI seat was
     "opencode + glm-5.3-flash" (one stale line inside an otherwise correct drawer), and a search
     ranks a well-phrased retired decision above the current one. Each mechanism is executed here:
     the pure parts on fixed text, the rest against a REAL throwaway MemPalace (own palace, own
@@ -1879,7 +1879,7 @@ def check_fact_review():
 def check_launcher():
     """Is the CTO MODEL told what pre-flight found, or only the human at the terminal?
 
-    FOUND 2026-10-03 on the first real ContentOS session: bin/cto printed the pre-flight to the
+    FOUND 2026-10-03 on the first real session on the pilot project: bin/cto printed the pre-flight to the
     terminal and told the model "Pre-flight output is above" - but a model is handed only the
     prompt. The CTO never saw it and greeted the owner with "pre-flight clean" over two guardrail
     failures and a memory check reading NOT capturing. Nothing tested the launcher, so nothing
@@ -1926,15 +1926,15 @@ def check_launcher():
             return r, (out.read_text() if out.exists() else "")
 
         r, prompt = launch('print("  ok    stub: all fine")\n'
-                           'print("  FAIL  stub: hook drift in ContentOS (13 hooks differ)")\n'
+                           'print("  FAIL  stub: hook drift in acme-notes (13 hooks differ)")\n'
                            'raise SystemExit(1)\n')
         expect = lambda desc, cond: (ok if cond else bad)(f"launcher: {desc}")
         expect("the model is launched with the failing check IN its prompt",
-               "stub: hook drift in ContentOS" in prompt and "PRE-FLIGHT RESULT" in prompt)
+               "stub: hook drift in acme-notes" in prompt and "PRE-FLIGHT RESULT" in prompt)
         expect("...and is no longer told to look 'above' (it cannot see the terminal)",
                "Pre-flight output is above" not in prompt)
         expect("passed checks are counted, not listed", "stub: all fine" not in prompt and "1 checks passed" in prompt)
-        expect("the human still sees the pre-flight live on the terminal", "stub: hook drift in ContentOS" in r.stdout)
+        expect("the human still sees the pre-flight live on the terminal", "stub: hook drift in acme-notes" in r.stdout)
         kept = proj / ".git" / "ai-teammates" / "preflight.txt"
         expect("the full output is kept where the CTO can read it",
                kept.exists() and "FAIL" in kept.read_text())

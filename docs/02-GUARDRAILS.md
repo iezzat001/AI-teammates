@@ -117,11 +117,11 @@ live scope check watched edit tools only, and that `required_denies` was asserte
 the test suite and enforced by nothing in the hooks. All three now execute in
 `guardrail_test.py` (SEAT LIMITS), and each was removed once to prove a check fails.
 
-**Counter-incident (2026-10-04), found by the ContentOS CTO:** the first fix tried every
+**Counter-incident (2026-10-04), found by the pilot project's CTO:** the first fix tried every
 word as a possible command, so with `supabase*` denied, `grep -rn "supabase" src/` was
 refused as if it ran the Supabase CLI, and the read-only audit seat could not read the
 product's auth layer (three refusals per run, no verdict). And because a seat could not
-delete a file, the CTO did a deletion card itself. Both fixed; the test now uses ContentOS's
+delete a file, the CTO did a deletion card itself. Both fixed; the test now uses the pilot project's
 real deny list and checks that reading about a denied tool still works.
 
 ---
