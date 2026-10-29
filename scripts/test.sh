@@ -56,6 +56,12 @@ if [ -n "$(git status --porcelain)" ]; then
   echo "FAIL: re-running install.sh on an installed project changed:"; git status --porcelain; exit 1
 fi
 echo "  ok    re-running install.sh changes nothing"
+# A seat the owner dropped in `cto setup` (moved to agents/off/) must stay dropped on an upgrade.
+mkdir -p .ai-teammates/agents/off && mv .ai-teammates/agents/backend.md .ai-teammates/agents/off/
+"$SRC/install.sh" > /dev/null
+if [ -e .ai-teammates/agents/backend.md ]; then echo "FAIL: re-running install.sh brought back a dropped seat"; exit 1; fi
+mv .ai-teammates/agents/off/backend.md .ai-teammates/agents/ && rmdir .ai-teammates/agents/off
+echo "  ok    re-running install.sh leaves a dropped seat dropped"
 git branch development
 git worktree add -q "$WORK/project-dev" development
 

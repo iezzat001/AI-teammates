@@ -22,7 +22,8 @@ MODE="${1:-install}"
 case "$MODE" in
   install|uninstall) ;;
   doctor)  exec "$SRC/bin/cto" --doctor ;;
-  *)       echo "usage: ai-teammates [install|doctor|uninstall]" >&2; exit 2 ;;
+  setup)   exec "$SRC/bin/cto" "$@" ;;
+  *)       echo "usage: ai-teammates [install|setup|doctor|uninstall]" >&2; exit 2 ;;
 esac
 
 PROJECT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
@@ -88,8 +89,10 @@ cp "$SRC"/core/dashboard/*  "$DEST/dashboard/"       # the dashboard page: core-
 # real project name. Re-installs used to overwrite them, and the templates'
 # literal ../PROJECT-ui made every project in one folder share one worktree.
 # cto.md is the orchestrator's contract with these hooks: core owns it.
+# A seat the owner dropped (`cto setup` moves it to agents/off/) stays dropped.
 for f in "$SRC"/core/agents/*.md; do
   t="$DEST/agents/$(basename "$f")"
+  [ -f "$DEST/agents/off/$(basename "$f")" ] && continue
   if [ ! -f "$t" ] || [ "$(basename "$f")" = cto.md ]; then
     sed "s#\.\./PROJECT-#../$NAME-#g" "$f" > "$t"
   fi
@@ -338,5 +341,5 @@ if [ -n "${INT_BR:-}" ] && ! git -C "$PROJECT" rev-parse --verify --quiet "refs/
   echo "    git worktree add ../$NAME-dev $INT_BR"
   echo
 fi
-echo "  Done. Start with:  cto --doctor    then:  cto"
+echo "  Done. Next:  cto setup    (memory, team and scope; it ends with cto --doctor)    then:  cto"
 echo "  First read: $DEST/docs/00-START-HERE.md"

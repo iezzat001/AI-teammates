@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """loopguard - stop an agent that keeps retrying what only the human can fix.
 
-THE PROBLEM (measured on ContentOS, 2026-10-02). In 26 CTO sessions, 101 of 230
+THE PROBLEM (measured on the pilot project, 2026-10-02). In 26 CTO sessions, 101 of 230
 tool errors were "requires approval" denials, all in headless `cto "task"` runs.
 After a denial the model tried a variant verb 42 times, another tool 27 times,
 and said nothing first in 73 of 95 continuations. The worst chain was nine

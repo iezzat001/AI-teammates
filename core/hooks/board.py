@@ -5,7 +5,7 @@ A board nobody updates becomes AGENTS_RULES.md: confidently wrong. This
 exists so updating is one short command, not a JSON edit.
 
   board.py move ACC-2 done "reviewed, approved"
-  board.py add  SCOUT-2 cto todo "Retrieval endpoint" "idea -> frameworks"
+  board.py add  API-5 cto todo "Search endpoint" "idea -> design"
   board.py ls
   board.py ls doing
 
@@ -46,7 +46,7 @@ def valid(d, status):
 
 
 # Column names differ per project (a fresh install: todo/doing/review/done;
-# ContentOS: backlog/in_progress/review/done). The runner speaks in states and
+# the pilot project: backlog/in_progress/review/done). The runner speaks in states and
 # this maps them onto whatever columns the board actually has.
 STATES = {"doing": ["doing", "in_progress"], "review": ["review"],
           "blocked": ["blocked"], "todo": ["todo", "backlog"]}
@@ -80,7 +80,7 @@ def set_state(tid, state, note=None):
     return ""
 
 
-def ensure(tid, agent, title):
+def ensure(tid, agent, title, note=""):
     """Put the card on the board if it is not there yet (first free column of todo/backlog)."""
     if not BOARD.exists():
         return False
@@ -90,14 +90,14 @@ def ensure(tid, agent, title):
     ids = [c["id"] for c in columns(d)]
     status = next((s for s in STATES["todo"] if s in ids), ids[0] if ids else "todo")
     d["tasks"].append({"id": tid, "title": title, "agent": agent, "status": status,
-                       "updated": date.today().isoformat(), "note": ""})
+                       "updated": date.today().isoformat(), "note": note})
     save(d)
     return True
 
 
 def cmd_ls(args):
     """`ls` every column; `ls <column>` one; `ls --open` everything not done. The CTO's brief
-    carries `ls --open` instead of the whole board.json: on ContentOS the board is 100 cards, 77
+    carries `ls --open` instead of the whole board.json: on the pilot project the board is 100 cards, 77
     of them done, about 24k tokens re-sent with every call of a session (measured 2026-10-05)."""
     d = load()
     open_only = "--open" in args

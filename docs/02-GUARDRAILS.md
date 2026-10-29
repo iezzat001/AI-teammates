@@ -117,11 +117,11 @@ live scope check watched edit tools only, and that `required_denies` was asserte
 the test suite and enforced by nothing in the hooks. All three now execute in
 `guardrail_test.py` (SEAT LIMITS), and each was removed once to prove a check fails.
 
-**Counter-incident (2026-10-04), found by the ContentOS CTO:** the first fix tried every
+**Counter-incident (2026-10-04), found by the pilot project's CTO:** the first fix tried every
 word as a possible command, so with `supabase*` denied, `grep -rn "supabase" src/` was
 refused as if it ran the Supabase CLI, and the read-only audit seat could not read the
 product's auth layer (three refusals per run, no verdict). And because a seat could not
-delete a file, the CTO did a deletion card itself. Both fixed; the test now uses ContentOS's
+delete a file, the CTO did a deletion card itself. Both fixed; the test now uses the pilot project's
 real deny list and checks that reading about a denied tool still works.
 
 ---
@@ -132,7 +132,7 @@ real deny list and checks that reading about a denied tool still works.
 |---|---|---|
 | `guardrail_test.py` | Every CTO session start | Seats are bound by permissions; `prepush` blocks a real commit — by **executing** it |
 | `prepush.py` | Every push (git pre-push hook) | No unreviewed product code on a protected branch; production only via integration |
-| `guard.py` | Claude Code `PreToolUse` | Product files are not edited in a checkout on a protected branch, judged by the checkout the file is in; changing a guardrail (the hooks, `.claude/settings*.json`, `config.json`) asks the owner, by edit or by shell; a card seat edits only its card's files and writes nothing through the shell; no seat runs `required_denies` |
+| `guard.py` | Claude Code `PreToolUse` | Product files are not edited in a checkout on a protected branch, judged by the checkout the file is in; changing a guardrail (the hooks, `.claude/settings*.json`, `config.json`) asks the owner, by edit or by shell; a card seat edits only its card's files and writes nothing through the shell; no seat runs `required_denies`; the CTO's own product-code edits follow `config.json` `delegation` (allow, ask or block) |
 | `seat_status.py` | Before launching a seat | Nothing is already running — from the **process table** |
 | `check_build_env.py` | Before every deploy | Config is actually baked into the **built bundle** |
 

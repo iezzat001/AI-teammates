@@ -49,7 +49,7 @@ it did X" is not evidence that X happened.
 
 ## Stop and ask: the human is in the loop
 
-The owner's time is cheap and yours is not. On ContentOS, 101 of 230 tool errors
+The owner's time is cheap and yours is not. On the pilot project, 101 of 230 tool errors
 were approvals and permissions you answered by rephrasing: nine failures in a row
 to make one symlink, a task the owner does in two seconds. `loopguard` counts
 your failures by class and will stop you. Do not wait for it.
@@ -88,8 +88,8 @@ could pick up cold: one goal, the files they may change, the steps, the context
 *you* chose for them, and commands that prove it is done. A seat sees the card
 and nothing else (no board, no docs, no architecture) and cannot go looking.
 That is the point: a small task with everything on it beats a big one that needs
-the whole picture. On ContentOS, seats were handed "read SCOUT_SPEC.md and build
-/scout" (15-25 minutes, needs the architecture) and only 5 of 94 cards were ever
+the whole picture. On the pilot project, seats were handed "read SEARCH_SPEC.md and build
+/search" (15-25 minutes, needs the architecture) and only 5 of 94 cards were ever
 delegated.
 
 ### Delegate when any of these is true
@@ -108,7 +108,10 @@ just do this".
    with a clean card beats a third attempt from the same wrong prior.
 
 Anything you would do "quickly, just this once" that lands in `src/` is
-delegation you are skipping to save two minutes. That is the same reasoning that
+delegation you are skipping to save two minutes. The owner may make this a rule:
+`config.json` `delegation.cto_product_edits` set to `ask` or `block` applies to your own
+product-code edits in any checkout (resolving a merge conflict is exempt), and
+`seat.py report --delegation` shows them the share you wrote yourself. That is the same reasoning that
 produced the guardrail overrides.
 
 ### Do it yourself
@@ -122,8 +125,15 @@ one card after you have split it twice. Always the review of what comes back.
 1. **Write the card first**, before any work:
    `python3 .ai-teammates/hooks/card.py new <ID> --seat <seat> --tier <tier> --title "..." --goal "..."`
    then fill in `.ai-teammates/cards/<ID>.json`. It also puts the card on the board.
-2. **`card.py check <ID>`.** If it says *split*, split it into two cards. Never
+2. **`card.py check <ID>`.** If it says *split*, it prints the `card.py split` command
+   that makes it a parent card and checked children (files grouped by folder: check the
+   grouping, then run it, and give each child its own goal). The split is refused if a file
+   is left uncovered, or if two children that could run at the same time edit one file. Never
    raise a limit to get past it: a card that is too big is two tasks, not a harder one.
+   **A task that needs more than one card starts as a parent card**: the plan, never run.
+   Add each piece with `card.py new <ID>-1 --seat ... --parent <ID>`, and on a child that
+   needs another's merged work set `"depends_on": ["<ID>-1"]`. The runner refuses a child
+   whose dependencies have not landed. `card.py tree <ID>` shows the plan and how far it got.
    **Memory is yours to hand out.** A seat cannot search memory: it runs with no MCP
    servers and none of the user's plugins, so the only context it gets is what is on
    the card. If background facts would change how it does the task (a past decision,
@@ -150,8 +160,13 @@ one card after you have split it twice. Always the review of what comes back.
 4. **Read the status line; it is facts, not the seat's word.** The runner already
    *executed* the checks: the diff, whether it stayed in scope, every acceptance
    command. `done` means all of them passed. It does not mean the work is right:
-   re-derive **one** load-bearing claim yourself, merge the branch into the
-   integration branch, then `seat.py card-clean <ID>`.
+   re-derive **one** load-bearing claim yourself, then **`seat.py land <ID>`**. It merges
+   the card in a scratch worktree, re-runs its acceptance on the merged result, and moves
+   the integration branch only if they pass; then it cleans up. A conflict is never
+   resolved for you: it stops, and the owner is asked.
+   When a parent's last child lands, `land` runs **`seat.py verify <parent>`**: the
+   parent's own acceptance, the whole outcome, on the integration branch. A parent is
+   done only when that passes. If it fails, write a new child card that fixes it.
 5. **`blocked`** means the seat stopped and is asking the human. Relay its ask in the
    "Stop and ask" format. Do not re-run the card until they have answered.
 
@@ -166,8 +181,8 @@ deliverable.
 - `acceptance` are commands that exit 0 (`grep -c`, `npm run typecheck`, a node
   script), never "looks right". Everything else about the card is negotiable; this is not.
 - `out_of_scope` names the helpful thing an agent would be tempted to add.
-- Bad: *"build the Scout tab from docs/SCOUT_SPEC.md"*. Good: *"the Scout tab renders
-  the 12 rows from `scout_rows` in src/routes/scout.tsx; `npm run typecheck` passes"*.
+- Bad: *"build the Search tab from docs/SEARCH_SPEC.md"*. Good: *"the Search tab renders
+  the 12 rows from `search_rows` in src/routes/search.tsx; `npm run typecheck` passes"*.
 
 **One seat at a time**: the runner checks the process table, not a log.
 

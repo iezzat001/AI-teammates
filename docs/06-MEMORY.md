@@ -6,6 +6,25 @@ step that depended on someone remembering to do it.
 
 ---
 
+## Decision 2026-10-29: keep both
+
+Both systems stay, because they solve different halves: claude-mem **captures** without anyone
+remembering to, and MemPalace **finds** (rank 1 for 82% of questions where claude-mem returned the
+answer in its top 5 for none; `tools/memory-bench/results/2026-10-02-pilot.md`). Slices default to
+MemPalace; `memslice.py search "<query>" --from claude-mem` reaches the other. `cto setup` configures both by
+default. The sections further down that call claude-mem the one store are SUPERSEDED by this.
+
+**Setting them up on a new project** (`cto setup` prints exactly what is missing):
+
+```bash
+npx claude-mem install                 # captures every Claude Code session, by lifecycle hooks
+uv tool install mempalace              # or: pipx install mempalace
+mempalace init ~/code/your-project     # the palace; the project's wing is config memory.mempalace_wing
+cto setup                              # writes the memory block, scoped to this project
+```
+
+`cto --doctor` then says whether claude-mem is *capturing*, not only installed.
+
 ## Status 2026-10-02: the choice is open, and seats never touch memory
 
 Everything below the next heading describes the memory history up to 2026-09-25, when
@@ -19,7 +38,7 @@ CTO decides what travels with a task: `memslice.py search "<query>"` previews it
 systems, so the choice of store can change without touching the cards. Scoping is
 mandatory (`config.json` `memory`: a MemPalace wing, claude-mem projects); unset is
 refused, because an unscoped MemPalace query returned another wing's memory as the top
-hit on ContentOS.
+hit on the pilot project.
 
 **claude-mem was silently not storing anything for two months, and the check said OK.**
 Its database lacked three columns its own worker writes (`retry_count`,
@@ -28,7 +47,7 @@ Its database lacked three columns its own worker writes (`retry_count`,
 another project's activity kept it green. It is now per project and counts the
 worker's store errors (`_config.mem_capture`, with a regression test).
 
-**Head-to-head on ContentOS** (`tools/memory-bench/results/2026-10-02-contentos.md`).
+**Head-to-head on the pilot project** (`tools/memory-bench/results/2026-10-02-pilot.md`).
 On identical documents MemPalace put the answer at rank 1 for 82% of questions; claude-mem
 returned it in its top 5 for none of 11, and for only 6 of 25 of its *own* observations.
 claude-mem is cheaper and faster per call; MemPalace captures nothing automatically.
@@ -51,7 +70,7 @@ slice a seat reads:
   mostly about retired things sink below the rest. Every hit says how old it is.
 - **Supersede / restore** a whole drawer (moved to room `superseded`, labelled, reversible).
 - **Decision records.** A merged card is filed as a decision (`memlife.py file`, or
-  automatically on `card-clean` with `memory.auto_file`, which is opt-in because it writes to
+  automatically on `card-clean` (and `land`) with `memory.auto_file`, which is opt-in because it writes to
   the shared palace). `audit` lists documents that still name a retired term and facts nobody
   has re-confirmed in 90 days.
 
@@ -63,7 +82,7 @@ it is not ours to rewrite. Executed checks (32, against a throwaway palace) are 
 failed, because that id names the room it came from, not `superseded`.
 
 **Status 2026-10-06: what changed gets recorded (fact review).** In real use (2026-10-02 to
-10-05) claude-mem captured 268 ContentOS observations on its own, and MemPalace gained nothing:
+10-05) claude-mem captured 268 observations from the pilot project on its own, and MemPalace gained nothing:
 the CTO moved Gemini from Vertex to an API key and no fact said so. A store of current truth stays
 current only if someone writes to it, and on this project every design that depended on someone
 remembering has failed. So a hook asks, at the moment it matters:
@@ -139,6 +158,9 @@ Settings: `~/.claude-mem/settings.json`.
 
 ## Why this one
 
+SUPERSEDED 2026-10-29: both systems are kept (the decision at the top). What follows is why
+claude-mem was adopted on 2026-09-25; its capture argument still holds.
+
 **Capture is not a step anyone can forget.** It is a lifecycle hook, not a
 discipline. Every previous design failed at exactly the point where a human or
 an agent had to remember to write something down.
@@ -155,6 +177,9 @@ Index-then-fetch keeps it affordable enough to actually use.
 memory that only writes at clean exit would have lost all three.
 
 **One store.** After killing a dual-write setup, the rule is one source of truth.
+SUPERSEDED 2026-10-29: there are two stores again, but not a dual write: claude-mem captures
+sessions, MemPalace holds what is filed (facts, decision records), and nothing writes the same
+thing to both.
 
 ---
 

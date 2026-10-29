@@ -149,7 +149,7 @@ def check_claude_seat(name, a):
     elif mode not in SAFE_CLAUDE_MODES:
         bad(f"{name}: unrecognised --permission-mode {mode}")
     # FOUND 2026-10-06: the read-only audit seat inherited every MCP server of the owner's setup,
-    # write-capable ones included (Drive, Lovable, Canva), and all 24 tools: cost on every audit,
+    # write-capable ones included (Drive, a UI builder, Canva), and all 24 tools: cost on every audit,
     # and a "read-only" seat offered tools that write.
     elif "--strict-mcp-config" not in hl or not tm or offered & {"Edit", "Write", "NotebookEdit", "Task", "Skill"}:
         bad(f"{name}: read-only seat not isolated: its headless command needs --strict-mcp-config and "
@@ -352,7 +352,7 @@ def check_models(all_seats):
 def parity(repo: Path, prod: str, integ: str) -> list:
     """[(worktree, verdict, detail)] for every OTHER worktree: ok | behind | fail.
 
-    FOUND 2026-10-03 by the ContentOS CTO: the production checkout (on `main`) failed this
+    FOUND 2026-10-03 by the pilot project's CTO: the production checkout (on `main`) failed this
     check after every framework upgrade until the next promotion, because the upgrade lands on
     the integration branch first, as it must. A failure that is guaranteed between every
     upgrade and every promotion is the rule that cannot be satisfied and gets ignored
@@ -458,7 +458,7 @@ def check_guard():
     script = REPO / ".ai-teammates" / "hooks" / "guard.py"
     with tempfile.TemporaryDirectory() as td:
         env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
-        for k in ("AI_TEAMMATES_OVERRIDE", "CONTENTOS_OVERRIDE"):
+        for k in ("AI_TEAMMATES_OVERRIDE"):
             env.pop(k, None)
         main_wt, dev_wt = Path(td) / "p", Path(td) / "p-dev"
         sh = lambda *a, cwd=main_wt: subprocess.run([GIT, *a], cwd=cwd, env=env,
@@ -552,6 +552,10 @@ def check_guard():
             ("config.json, by sed -i", bash("sed -i '' s/5/20/ .ai-teammates/config.json"), "ask"),
             ("config.json, by a redirect", bash("echo '{}' > .ai-teammates/config.json"), "ask"),
             ("config.json, by git checkout of an older copy", bash("git checkout HEAD~3 -- .ai-teammates/config.json"), "ask"),
+            # setup rewrites config.json and the seat specs, and running a hook script is otherwise exempt
+            ("config.json, by cto setup", bash("cto setup --yes"), "ask"),
+            ("config.json, by running setup.py", bash("python3 .ai-teammates/hooks/setup.py --yes --no-doctor"), "ask"),
+            ("config.json, by ai-teammates setup", bash("ai-teammates setup --answers a.json"), "ask"),
             ("CONTROL: a product file in a feature worktree", edit(Path(td) / "p-feat" / "src" / "a.ts"), "allow"),
             ("CONTROL: reading config.json", bash("cat .ai-teammates/config.json | python3 -m json.tool"), "allow"),
             ("CONTROL: running a hook script", bash("python3 .ai-teammates/hooks/card.py check X-1"), "allow"),
@@ -561,6 +565,56 @@ def check_guard():
         ]
         for desc, got, want in cases:
             (ok if got == want else bad)(f"guard: CTO edits {desc} -> {got}" + ("" if got == want else f", expected {want}"))
+
+        # DELEGATION POLICY (issue #5): nothing forced delegation. MEASURED 2026-10-17: on one large owner
+        # request the CTO delegated two cards and wrote 982 of 1,252 product lines itself, in a feature
+        # worktree, where no rule applies. The owner now chooses: allow (as before), ask, or block.
+        feat = Path(td) / "p-feat"
+        policy = lambda v: [(w / ".ai-teammates" / "config.json").write_text(json.dumps(
+            {"protected_branches": ["main", "development"], **({"delegation": {"cto_product_edits": v}} if v else {})}))
+            for w in (dev_wt, feat)]
+        verdicts = {}
+        for v in ("allow", "ask", "block"):
+            policy(v)
+            verdicts[v] = edit(feat / "src" / "a.ts")
+        expect = lambda desc, cond: (ok if cond else bad)(f"guard: delegation: {desc}")
+        expect("a CTO edit to a product file in a feature worktree follows the policy: allow / ask / block "
+               f"(got {verdicts})", verdicts == {"allow": "allow", "ask": "ask", "block": "block"})
+        q = subprocess.run([sys.executable, str(script)], cwd=dev_wt, env={**env, "CLAUDE_AGENT_NAME": "cto"},
+                           input=json.dumps({"tool_name": "Edit", "tool_input": {"file_path": str(feat / "src" / "a.ts")}}),
+                           capture_output=True, text=True)
+        expect("...and the block says to write a card", "card.py new" in q.stderr)
+        expect("with block, a shell write to a product file is refused too",
+               bash("echo x > ../p-feat/src/a.ts") == "block" and bash("sed -i s/a/b/ ../p-feat/src/a.ts") == "block")
+        expect("CONTROL: with block, reading a product file and writing a doc are not refused",
+               bash("cat ../p-feat/src/a.ts") == "allow" and edit(feat / "docs" / "x.md") == "allow")
+        cardf = Path(td) / "card.json"
+        cardf.write_text(json.dumps({"id": "X-1", "scope": {"edit": ["src/a.ts"]}}))
+        seat_says = {}
+        for v in ("allow", "ask", "block"):
+            policy(v)
+            q = subprocess.run([sys.executable, str(script)], cwd=feat, input=json.dumps(
+                {"tool_name": "Edit", "tool_input": {"file_path": str(feat / "src" / "a.ts")}}), capture_output=True,
+                text=True, env={**env, "CLAUDE_AGENT_NAME": "tester", "AI_TEAMMATES_SEAT": "Tester",
+                                "AI_TEAMMATES_CARD": str(cardf)})
+            seat_says[v] = "block" if q.returncode == 2 else "ask" if '"ask"' in q.stdout else "allow"
+        expect(f"a seat's edit inside its card scope is unaffected by every policy (got {seat_says})",
+               set(seat_says.values()) == {"allow"})
+        # conflict resolution while a merge is in progress is not authoring product code
+        pm = Path(td) / "p-merge"
+        sh("worktree", "add", "-q", "-b", "feat/m", str(pm))
+        for w, text in ((pm, "m\n"), (feat, "x\n")):
+            (w / "src").mkdir(exist_ok=True)
+            (w / "src" / "a.ts").write_text(text)
+            sh("add", "src/a.ts", cwd=w)
+            sh("commit", "-qm", "a", cwd=w)
+        sh("merge", "feat/x", cwd=pm)
+        policy("block")
+        expect("conflict resolution during a merge is allowed under block",
+               sh("rev-parse", "-q", "--verify", "MERGE_HEAD", cwd=pm).returncode == 0 and edit(pm / "src" / "a.ts") == "allow")
+        policy("")
+        expect("CONTROL: with no delegation key, a CTO edit in a feature worktree is allowed as before",
+               edit(feat / "src" / "a.ts") == "allow")
 
 
 def check_loopguard():
@@ -580,7 +634,7 @@ def check_loopguard():
         return
     with tempfile.TemporaryDirectory() as td:
         base = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
-        for k in ("AI_TEAMMATES_OVERRIDE", "CONTENTOS_OVERRIDE", "AI_TEAMMATES_HEADLESS",
+        for k in ("AI_TEAMMATES_OVERRIDE", "AI_TEAMMATES_HEADLESS",
                   "AI_TEAMMATES_CARD"):
             base.pop(k, None)
         g = lambda *a: subprocess.run([GIT, *a], cwd=td, env=base, capture_output=True, text=True)
@@ -701,6 +755,9 @@ if mode in ("edit_ok", "acc_fail", "denied_then_ok"):
     open("src/a.txt", "a").write("fixed\n"); tool("src/a.txt")
 elif mode == "edit_outside":
     open("src/b.txt", "a").write("oops\n"); tool("src/b.txt")
+elif mode == "write":
+    for p, t in json.loads(os.environ["STUB_WRITES"]).items():
+        open(p, "w").write(t); tool(p)
 elif mode == "blocked":
     text = "BLOCKED: auth | log in to the staging service"
 elif mode == "loop":
@@ -716,7 +773,7 @@ emit({"type": "result", "subtype": "success", "is_error": False, "num_turns": 2,
 def check_cards():
     """Is a card run judged by what can be CHECKED, not by what the seat says?
 
-    ContentOS recorded `clean` for a seat that changed nothing, and nothing could
+    The pilot project recorded `clean` for a seat that changed nothing, and nothing could
     stop a run or tie it to a card. Executed here with a stub standing in for
     `claude`, covering exactly those cases: no change, edits outside scope, an
     acceptance check that fails, a hang, a human-only block, and a card too big
@@ -734,7 +791,7 @@ def check_cards():
         proj = Path(td) / "proj"
         proj.mkdir()
         base = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
-        for k in ("AI_TEAMMATES_OVERRIDE", "CONTENTOS_OVERRIDE", "AI_TEAMMATES_HEADLESS", "AI_TEAMMATES_CARD"):
+        for k in ("AI_TEAMMATES_OVERRIDE", "AI_TEAMMATES_HEADLESS", "AI_TEAMMATES_CARD"):
             base.pop(k, None)
         g = lambda *a, cwd=proj: subprocess.run([GIT, *a], cwd=cwd, env=base, capture_output=True, text=True)
         g("init", "-q", "-b", "main")
@@ -829,7 +886,7 @@ def check_cards():
                "a.txt says fixed" in av[2] and "grep -q fixed src/a.txt" not in av[2]
                and "card.py accept" in av[2])
 
-        # the failure shapes that cost money on ContentOS
+        # the failure shapes that cost money on the pilot project
         mk("T-2")
         p, r = go("T-2", "noop")
         expect("a seat that changes nothing is NOT clean (was recorded clean)",
@@ -950,11 +1007,335 @@ def check_cards():
         expect("guard: an unreadable card means no edits (fails closed)",
                scope(f"{wt2}/src/a.txt", card="/nonexistent/card.json") == 2)
 
+        # PLANS (issue #1): the plan for a big task lives in a parent card, not only in the CTO's context.
+        # FOUND 2026-10-17: three cards for one outcome were linked only by board prose, and nothing refused a card
+        # started before the card whose work it needed had landed.
+        def cli(*a):
+            q = subprocess.run([sys.executable, str(hooks / "card.py"), *a], cwd=proj, env=base,
+                               capture_output=True, text=True)
+            return q.returncode, q.stdout
+        mk("C", children=["C-1", "C-2"])
+        mk("C-1", parent="C", depends_on=["C-2"])
+        mk("C-2", parent="C", depends_on=["C-1"])
+        rc, out = cli("check", "C-1")
+        expect("plans: a dependency cycle is refused by card.py check", rc == 1 and "cycle" in out)
+        mk("U-1", depends_on=["NOPE-9"])
+        rc, out = cli("check", "U-1")
+        expect("plans: an unknown dependency is refused, naming it", rc == 1 and "NOPE-9" in out)
+        mk("M", children=["M-1"])
+        mk("M-1")
+        mk("M-2", parent="M")
+        rc1, out1 = cli("check", "M")
+        rc2, out2 = cli("check", "M-2")
+        expect("plans: a parent/child mismatch is refused from either side",
+               rc1 == 1 and "M-1" in out1 and rc2 == 1 and "children" in out2)
+        mk("P", children=["P-1", "P-2"])
+        mk("P-1", parent="P")
+        mk("P-2", parent="P", depends_on=["P-1"])
+        mk("Q", children=["Q-1"])
+        mk("Q-1", parent="Q", depends_on=["P-1"])
+        rc, out = cli("check", "Q-1")
+        expect("plans: a dependency on another parent's card is refused", rc == 1 and "P-1" in out)
+        expect("plans: a well-formed parent and child pass card.py check",
+               cli("check", "P")[0] == 0 and cli("check", "P-2")[0] == 0)
+        expect("CONTROL: a card with no parent and no depends_on checks as before", cli("check", "T-2")[0] == 0)
+
+        p, r = go("P", "edit_ok")
+        expect("plans: running a parent card is refused and nothing is launched",
+               p.returncode == 1 and "children" in p.stdout and r is None and not (Path(td) / "proj-card-p").exists())
+        p, r1 = go("P-1", "edit_ok")
+        p, r = go("P-2", "edit_ok")
+        expect("plans: a child whose dependency is done but NOT merged is refused before launch, naming it",
+               r1 and r1["status"] == "done" and p.returncode == 1 and "P-1" in p.stdout
+               and "merged" in p.stdout and r is None and not (Path(td) / "proj-card-p-2").exists())
+        rc, out = cli("tree", "P")
+        expect("plans: card.py tree shows each child, its dependencies and its status",
+               rc == 0 and re.search(r"P-1\b.*\bdone\b", out) and re.search(r"P-2\b.*P-1.*\bwritten\b", out))
+        g("branch", "-f", "development", "feat/t-p-1")            # the CTO merges P-1 (a fast-forward)
+        p, r = go("P-2", "edit_ok")
+        wt_p2 = Path(td) / "proj-card-p-2"
+        expect("plans: once the dependency is merged the child runs, and its worktree has the dependency's change",
+               r and r["status"] == "done" and g("merge-base", "--is-ancestor", r1["head"], "HEAD", cwd=wt_p2).returncode == 0)
+        rc, out = cli("tree", "P")
+        expect("plans: card.py tree marks the merged child merged and the finished one done",
+               re.search(r"P-1\b.*\bmerged\b", out) and re.search(r"P-2\b.*\bdone\b", out))
+        rc, out = cli("new", "P-3", "--seat", "tester", "--parent", "P")
+        expect("plans: card.py new --parent links both cards and the board note names the parent",
+               rc == 0 and "P-3" in json.loads((proj / ".ai-teammates" / "cards" / "P.json").read_text())["children"]
+               and json.loads((proj / ".ai-teammates" / "cards" / "P-3.json").read_text())["parent"] == "P"
+               and "P" in board_of("P-3")["note"].split())
+
+        # LANDING (issue #3): a card reaches the integration branch only after its checks pass on the MERGED
+        # result. It used to be the CTO's hand-typed `git merge`, and nothing re-ran the card's checks after it.
+        devwt = Path(td) / "proj-dev"                               # the integration checkout, as on a real install
+        g("worktree", "add", "-q", str(devwt), "development")
+        for cid in ("L-1", "L-2", "L-3", "L-4"):
+            mk(cid, acceptance=[{"run": "grep -q fixed src/a.txt && ! grep -q BROKEN src/b.txt", "why": "fixed, b intact"}])
+            go(cid, "edit_ok")
+        dev = lambda: g("rev-parse", "development").stdout.strip()
+
+        def land(cid):
+            q = subprocess.run([sys.executable, str(hooks / "seat.py"), "land", cid], cwd=proj, env=base,
+                               capture_output=True, text=True, timeout=120)
+            return q.returncode, q.stdout + q.stderr
+
+        def commit_on_dev(path, text):
+            (devwt / path).write_text(text)
+            g("add", path, cwd=devwt)
+            g("commit", "-qm", f"meanwhile: {path}", cwd=devwt)
+        (devwt / "src" / "b.txt").write_text("dirty\n")
+        before = dev()
+        rc, out = land("L-1")
+        expect("land: refused while the integration checkout has uncommitted changes",
+               rc == 1 and "uncommitted" in out and dev() == before and (Path(td) / "proj-card-l-1").exists())
+        g("checkout", "--", "src/b.txt", cwd=devwt)
+        r1 = json.loads([l for l in (state / "agent_runs.jsonl").read_text().splitlines() if '"L-1"' in l][-1])
+        rc, out = land("L-1")
+        row = json.loads([l for l in (state / "agent_runs.jsonl").read_text().splitlines() if '"L-1"' in l][-1])
+        expect("land: a done card lands, its acceptance re-run on the merged result, and its worktree is cleaned",
+               rc == 0 and "1/1" in out and g("merge-base", "--is-ancestor", r1["head"], "development").returncode == 0
+               and dev() != before and bool(row.get("merged")) and not (Path(td) / "proj-card-l-1").exists()
+               and not g("status", "--porcelain", "--untracked-files=no", cwd=devwt).stdout.strip()
+               and g("rev-parse", "HEAD", cwd=devwt).stdout.strip() == dev())
+        commit_on_dev("src/b.txt", "BROKEN\n")
+        before = dev()
+        rc, out = land("L-2")
+        expect("land: a card whose acceptance FAILS after merging (the branch moved underneath it) does not land",
+               rc == 1 and "acceptance" in out and dev() == before
+               and not (Path(td) / "proj-land-l-2").exists() and (Path(td) / "proj-card-l-2").exists())
+        g("merge", "-q", "--no-ff", "-m", "manual", "feat/t-l-2", cwd=devwt)
+        cl = subprocess.run([sys.executable, str(hooks / "seat.py"), "card-clean", "L-2"], cwd=proj, env=base,
+                            capture_output=True, text=True)
+        expect("CONTROL: a manual git merge by the CTO still works, and card-clean accepts it",
+               cl.returncode == 0 and "merged" in cl.stdout and not (Path(td) / "proj-card-l-2").exists())
+        commit_on_dev("src/a.txt", "rewritten\n")
+        before = dev()
+        rc, out = land("L-3")
+        conflict = [d for f in (state / "blocked").glob("*.json") for d in [json.loads(f.read_text())]
+                    if d.get("card") == "L-3" and d.get("class") == "merge-conflict" and d.get("resolved") is None]
+        expect("land: a conflicting card does not land; the integration branch is unchanged and a BLOCKED record is written",
+               rc == 75 and dev() == before and bool(conflict) and "src/a.txt" in conflict[0]["need"]
+               and not (Path(td) / "proj-land-l-3").exists())
+        mk("L-5")
+        mk("L-4", depends_on=["L-5"])
+        rc, out = land("L-4")
+        expect("land: a card whose dependency is not merged is refused, naming it", rc == 1 and "L-5" in out and dev() == before)
+
+        # THE COMBINED RESULT (issue #4): two cards can each pass alone and break each other. K-1 renames
+        # the export and updates every caller it can see; K-2, written against the old name, adds a caller.
+        commit_on_dev("src/api.txt", "name=old\n")
+        commit_on_dev("src/use.txt", "uses=old\n")
+        commit_on_dev("check.sh", 'n=$(cut -d= -f2 src/api.txt)\nfor f in src/use*.txt; do grep -qx "uses=$n" "$f" '
+                                  '|| { echo "$f does not use $n"; exit 1; }; done\n')
+        cfg = proj / ".ai-teammates" / "config.json"
+        cfg_orig = cfg.read_text()
+        subprocess.run([sys.executable, str(hooks / "card.py"), "new", "K", "--seat", "tester"], cwd=proj, env=base,
+                       capture_output=True)
+        mk("K", children=["K-1", "K-2"], goal="every caller uses the renamed export", scope={"edit": []},
+           acceptance=[{"run": "grep -qx name=new src/api.txt && sh check.sh", "why": "renamed, and every caller follows"}])
+        mk("K-1", parent="K", scope={"edit": ["src/api.txt", "src/use.txt"]},
+           acceptance=[{"run": "grep -qx name=new src/api.txt && grep -qx uses=new src/use.txt"}])
+        mk("K-2", parent="K", scope={"edit": ["src/use2.txt"]}, acceptance=[{"run": "grep -qx uses=old src/use2.txt"}])
+        _, k1 = go("K-1", "write", STUB_WRITES=json.dumps({"src/api.txt": "name=new\n", "src/use.txt": "uses=new\n"}))
+        _, k2 = go("K-2", "write", STUB_WRITES=json.dumps({"src/use2.txt": "uses=old\n"}))
+        cfg.write_text(json.dumps({**json.loads(cfg_orig), "integration_checks": ["sh check.sh"]}))
+        rc1, _ = land("K-1")
+        verify = lambda pid: subprocess.run([sys.executable, str(hooks / "seat.py"), "verify", pid], cwd=proj, env=base,
+                                            capture_output=True, text=True, timeout=120)
+        v = verify("K")
+        expect("verify: refused while a child has not landed, naming it",
+               k1 and k2 and k1["status"] == k2["status"] == "done" and rc1 == 0
+               and v.returncode == 1 and "K-2" in v.stdout and board_of("K")["status"] != "done")
+        before = dev()
+        rc, out = land("K-2")
+        expect("integration checks: a card that passes alone but breaks another is refused when it lands; "
+               "the integration branch is unchanged", rc == 1 and "sh check.sh" in out and dev() == before)
+        cfg.write_text(cfg_orig)
+        rc, out = land("K-2")
+        expect("verify: with no integration checks, the parent's whole-outcome check fails after the last child "
+               "lands, and the parent is not done",
+               dev() != before and rc == 1 and "K" in out and board_of("K")["status"] != "done"
+               and "sh check.sh" in board_of("K")["note"])
+        mk("K", children=["K-1", "K-2", "K-3"], goal="every caller uses the renamed export", scope={"edit": []},
+           acceptance=[{"run": "grep -qx name=new src/api.txt && sh check.sh", "why": "renamed, and every caller follows"}])
+        mk("K-3", parent="K", depends_on=["K-2"], scope={"edit": ["src/use2.txt"]}, acceptance=[{"run": "grep -qx uses=new src/use2.txt"}])
+        go("K-3", "write", STUB_WRITES=json.dumps({"src/use2.txt": "uses=new\n"}))
+        rc, out = land("K-3")
+        expect("verify: after a fix child lands, the parent's check passes and the parent is done",
+               rc == 0 and board_of("K")["status"] == "done")
+
+        # SPLIT (issue #2): an oversized card was only refused ("split the card"); the split itself was prose.
+        # Verified in a sandbox: an 8-file, 15-step onboarding card is refused, and nothing helped turn it into
+        # well-formed children, or noticed a file no child covers or two parallel children editing one file.
+        files = [f"src/s/a{i}.txt" for i in range(1, 5)] + [f"src/t/b{i}.txt" for i in range(1, 5)]
+        mk("S", scope={"edit": files}, steps=[f"edit {files[i % 8]} step {i}" for i in range(15)],
+           acceptance=[{"run": "grep -q x src/s/a1.txt"}, {"run": "grep -q x src/t/b1.txt"}],
+           memory={"text": "the onboarding facts"}, out_of_scope=["the billing page"])
+        rc, out = cli("check", "S")
+        cmd = next((l.split("card.py ", 1)[1] for l in out.splitlines() if "card.py split S" in l), "")
+        expect("split: card.py check on an oversized card prints the exact split command",
+               rc == 1 and "--into S-1,S-2" in cmd and "--files" in cmd)
+        rc, out = cli(*shlex.split(cmd))
+        kid = lambda c: json.loads((proj / ".ai-teammates" / "cards" / f"{c}.json").read_text())
+        expect("split: an 8-file card becomes a parent plus children that each pass card.py check, linked",
+               rc == 0 and kid("S")["children"] == ["S-1", "S-2"] and kid("S-1")["parent"] == "S"
+               and kid("S-2")["depends_on"] == ["S-1"] and kid("S-1")["scope"]["edit"] == files[:4]
+               and kid("S-2")["memory"]["text"] == "the onboarding facts" and kid("S-2")["out_of_scope"] == ["the billing page"]
+               and all(cli("check", c)[0] == 0 for c in ("S", "S-1", "S-2")))
+        rfiles = [f"src/r/f{i}.txt" for i in range(1, 9)]
+        mk("R", scope={"edit": rfiles}, acceptance=[{"run": "grep -q x src/r/f1.txt"}, {"run": "grep -q x src/r/f8.txt"}])
+        rc, out = cli("split", "R", "--into", "R-1,R-2", "--files", "R-1=" + ",".join(rfiles[:4]), "R-2=" + ",".join(rfiles[4:7]))
+        expect("split: a split that leaves a file of the parent uncovered is refused, naming it, and writes nothing",
+               rc == 1 and "src/r/f8.txt" in out and not (proj / ".ai-teammates" / "cards" / "R-1.json").exists())
+        overlap = ["--files", "R-1=" + ",".join(rfiles[:4]), "R-2=" + ",".join(rfiles[3:])]
+        rc, out = cli("split", "R", "--into", "R-1,R-2", "--independent", *overlap)
+        expect("split: two unordered siblings editing the same file are refused, naming it",
+               rc == 1 and "src/r/f4.txt" in out and not (proj / ".ai-teammates" / "cards" / "R-1.json").exists())
+        rc, out = cli("split", "R", "--into", "R-1,R-2", *overlap)
+        expect("split: the same two, ordered by depends_on, are accepted", rc == 0 and cli("check", "R")[0] == 0)
+        before = (proj / ".ai-teammates" / "cards" / "T-2.json").read_text()
+        rc, out = cli("split", "T-2", "--into", "T-2a,T-2b")
+        expect("CONTROL: a card within the limits is not touched by split, and checks as before",
+               rc == 1 and (proj / ".ai-teammates" / "cards" / "T-2.json").read_text() == before
+               and cli("check", "T-2")[0] == 0 and not (proj / ".ai-teammates" / "cards" / "T-2a.json").exists())
+
+
+def check_delegation_report():
+    """`seat.py report --delegation`: how much product code reached the integration branch through cards
+    (commits by seat:*) and how much the CTO wrote itself. MEASURED 2026-10-17 by hand: 982 of 1,252 lines
+    by the CTO; the owner had no report showing it."""
+    print("\n  DELEGATION REPORT — product lines by seats versus by the CTO")
+    import os
+    import shutil
+    import tempfile
+    from datetime import datetime, timedelta
+    here = Path(__file__).resolve().parent
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td) / "proj"
+        (proj / ".ai-teammates").mkdir(parents=True)
+        shutil.copytree(here, proj / ".ai-teammates" / "hooks", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        (proj / ".ai-teammates" / "config.json").write_text(json.dumps({"protected_branches": ["main", "development"]}))
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
+        g = lambda *a, **e: subprocess.run([GIT, *a], cwd=proj, env={**env, **e}, capture_output=True, text=True)
+        g("init", "-q", "-b", "development")
+        g("config", "user.email", "t@t"); g("config", "user.name", "owner")
+
+        def commit(who, files, when=None):
+            for f, n in files.items():
+                (proj / f).parent.mkdir(parents=True, exist_ok=True)
+                (proj / f).write_text("".join(f"line {i}\n" for i in range(n)))
+                g("add", f)
+            e = {"GIT_AUTHOR_NAME": who, "GIT_COMMITTER_NAME": who}
+            if when:
+                e.update(GIT_AUTHOR_DATE=when, GIT_COMMITTER_DATE=when)
+            g("commit", "-qm", f"by {who}", **e)
+        g("add", "-A"); g("commit", "-qm", "install")
+        commit("seat:ui-developer", {"src/x.ts": 3})
+        commit("cto", {"src/y.ts": 5, "docs/z.md": 40})                  # the doc is not product code
+        commit("cto", {"src/old.ts": 7}, (datetime.now() - timedelta(days=100)).strftime("%Y-%m-%dT10:00:00"))
+        p = subprocess.run([sys.executable, str(proj / ".ai-teammates" / "hooks" / "seat.py"), "report", "--delegation",
+                            "--days", "30"], cwd=proj, env=env, capture_output=True, text=True)
+        total = next((l for l in p.stdout.splitlines() if l.strip().startswith("total")), "")
+        nums = [int(x) for x in re.findall(r"\b\d+\b", total)]
+        (ok if p.returncode == 0 and nums[:3] == [3, 5, 62] else bad)(
+            f"delegation report: seat lines versus CTO lines match the fixture history (3 / 5, 62% by the CTO; "
+            f"docs and commits older than --days left out): got {total.strip() or p.stdout.strip()[-200:] or p.stderr[-200:]}")
+
+
+def check_setup():
+    """`cto setup`: the one place a new project chooses memory, team and scope.
+
+    install.sh asks nothing, and memory was configured by no step at all: memslice refused to attach a
+    slice (scoping is mandatory) and a new owner learned that only when the CTO first tried. Executed
+    here on a copy of this installation: defaults, an answers file, the prompts, model checks, refusal."""
+    print("\n  SETUP — does `cto setup` write the choices, and only the owner can run it?")
+    import os
+    import shutil
+    import tempfile
+    here = Path(__file__).resolve().parent
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td) / "proj"
+        ai = proj / ".ai-teammates"
+        ai.mkdir(parents=True)
+        shutil.copytree(here, ai / "hooks", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        shutil.copytree(REPO / ".ai-teammates" / "agents", ai / "agents")
+        base_cfg = {"project": "proj", "protected_branches": ["main", "development"], "guarded_paths": ["src/"],
+                    "cards": {"max_edit_files": 4}, "memory": {"retired": ["old-term"]}}
+        (ai / "config.json").write_text(json.dumps(base_cfg))
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
+        for k in ("CLAUDE_AGENT_NAME", "AI_TEAMMATES_SEAT", "AI_TEAMMATES_CARD", "AI_TEAMMATES_CLAUDE_BIN"):
+            env.pop(k, None)
+        subprocess.run([GIT, "init", "-q", "-b", "main"], cwd=proj, env=env, capture_output=True)
+        expect = lambda desc, cond: (ok if cond else bad)(f"setup: {desc}")
+        cfg = lambda: json.loads((ai / "config.json").read_text())
+        spec = lambda name: (ai / "agents" / f"{name}.md").read_text() if (ai / "agents" / f"{name}.md").exists() else ""
+
+        def setup(*args, stdin="", **extra):
+            return subprocess.run([sys.executable, str(ai / "hooks" / "setup.py"), *args], cwd=proj, input=stdin,
+                                  env={**env, **extra}, capture_output=True, text=True, timeout=120)
+
+        p = setup("--yes")
+        c = cfg()
+        expect("--yes configures BOTH memories, scoped to this project, MemPalace first",
+               p.returncode == 0 and c.get("memory", {}).get("default") == "mempalace"
+               and c["memory"].get("mempalace_wing") == "proj" and c["memory"].get("claude_mem_projects") == ["proj"])
+        expect("CONTROL: what setup does not ask about is kept (card limits, retired terms)",
+               c.get("cards") == {"max_edit_files": 4} and c["memory"].get("retired") == ["old-term"]
+               and c["guarded_paths"] == ["src/"] and "seat_models" not in c and "delegation" not in c)
+        if not (Path.home() / ".claude-mem" / "settings.json").exists():
+            expect("...and prints the install command of a memory that is not installed",
+                   "npx claude-mem install" in p.stdout)
+
+        answers = Path(td) / "answers.json"
+        answers.write_text(json.dumps({
+            "memory": "claude-mem", "cto_model": "m-cto",
+            "seats": {"backend": {"keep": False}, "ui-developer": {"model": "m-ui"}, "security-audit": {"model": "m-audit"}},
+            "seat_models": {"hard": "m-hard"}, "guarded_paths": ["src/", "api/"], "delegation": "ask",
+            "integration_checks": ["npm test"]}))
+        p = setup("--answers", str(answers))
+        c = cfg()
+        expect("an answers file sets memory, the CTO model, tier models and scope",
+               p.returncode == 0 and c["memory"].get("default") == "claude-mem" and "mempalace_wing" not in c["memory"]
+               and c["cto"]["model"] == "m-cto" and c.get("seat_models") == {"hard": "m-hard"}
+               and c["guarded_paths"] == ["src/", "api/"] and c.get("delegation") == {"cto_product_edits": "ask"}
+               and c.get("integration_checks") == ["npm test"])
+        expect("a dropped seat leaves the team (kept in agents/off/) and a seat's model is changed in its spec",
+               not spec("backend") and (ai / "agents" / "off" / "backend.md").exists()
+               and re.search(r"^model: m-ui$", spec("ui-developer"), re.M))
+        expect("...and a launch line's --model follows the seat's model",
+               "--model m-audit" in spec("security-audit") and "--model claude-sonnet" not in spec("security-audit"))
+
+        before = (ai / "config.json").read_text()
+        p = setup("--yes", CLAUDE_AGENT_NAME="cto")
+        expect("refused inside an agent session (the CTO's or a seat's), and nothing is written",
+               p.returncode == 2 and "owner" in p.stdout and (ai / "config.json").read_text() == before)
+
+        p = setup("--ask", stdin="bogus\nnone\n" + "\n" * 40)
+        c = cfg()
+        expect("asked: a wrong answer is asked again, and 'none' removes the memory scope but keeps the rest",
+               p.returncode == 0 and "one of:" in p.stdout and "default" not in c.get("memory", {})
+               and c.get("memory", {}).get("retired") == ["old-term"])
+
+        stub = Path(td) / "claude"
+        stub.write_text("#!/bin/sh\n[ \"$2\" = good-model ] || [ \"$2\" = claude-haiku-4-5-20251001 ] || "
+                        "[ \"$2\" = claude-sonnet-5-5 ] || [ \"$2\" = claude-opus-5-5 ] || [ \"$2\" = m-ui ] || "
+                        "[ \"$2\" = m-audit ] || [ \"$2\" = m-cto ] || [ \"$2\" = m-hard ]\n")
+        stub.chmod(0o755)
+        before = (ai / "config.json").read_text()
+        answers.write_text(json.dumps({"seat_models": {"hard": "no-such-model"}}))
+        p = setup("--answers", str(answers), "--verify-models", AI_TEAMMATES_CLAUDE_BIN=str(stub))
+        expect("--verify-models: a model that does not answer is named and nothing is written",
+               p.returncode == 1 and "no-such-model" in p.stdout and (ai / "config.json").read_text() == before)
+        answers.write_text(json.dumps({"seat_models": {"hard": "good-model"}}))
+        p = setup("--answers", str(answers), "--verify-models", AI_TEAMMATES_CLAUDE_BIN=str(stub))
+        expect("--verify-models: when every model answers, the choice is written",
+               p.returncode == 0 and cfg().get("seat_models") == {"hard": "good-model"})
+
 
 def check_seat_limits():
     """What a seat may run, enforced by the hooks and not only by its allowlist.
 
-    FOUND 2026-10-03 by the security-audit seat, auditing this framework before ContentOS
+    FOUND 2026-10-03 by the security-audit seat, auditing this framework before the pilot project
     promoted it: (A) a card's `allow` went into --allowedTools unchecked, and the live scope
     check watched edit tools only, so a card granting `Bash(cat:*)` let a seat write any file
     through the shell; (B) config.json required_denies (git push, rm -rf, ssh) was asserted by
@@ -998,12 +1379,12 @@ def check_seat_limits():
 
     with tempfile.TemporaryDirectory() as td:
         base = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
-        for k in ("AI_TEAMMATES_OVERRIDE", "CONTENTOS_OVERRIDE", "AI_TEAMMATES_HEADLESS", "AI_TEAMMATES_CARD",
+        for k in ("AI_TEAMMATES_OVERRIDE", "AI_TEAMMATES_HEADLESS", "AI_TEAMMATES_CARD",
                   "AI_TEAMMATES_SEAT", "CLAUDE_AGENT_NAME"):
             base.pop(k, None)
         subprocess.run([GIT, "init", "-q", "-b", "development"], cwd=td, env=base, capture_output=True)
         (Path(td) / ".ai-teammates").mkdir()
-        # ContentOS's real list: the project adds the Supabase and Wrangler CLIs to the defaults
+        # the pilot project's real list: the project adds the Supabase and Wrangler CLIs to the defaults
         (Path(td) / ".ai-teammates" / "config.json").write_text(json.dumps({
             "protected_branches": ["main", "development"],
             "required_denies": ["git push*", "rm -rf*", "ssh*", "wrangler*", "supabase*"]}))
@@ -1064,7 +1445,7 @@ def check_seat_limits():
 
         seat_env = {"AI_TEAMMATES_SEAT": "Tester", "CLAUDE_AGENT_NAME": "tester"}
         denied = ["git push origin feat", "git -C . push", "git --no-pager -c a=b push origin", "cd /tmp && rm -rf foo",
-                  "ssh vps 'ls'", "sudo rm -rf /x", "bash -c 'git push origin x'", "supabase db push",
+                  "ssh prod 'ls'", "sudo rm -rf /x", "bash -c 'git push origin x'", "supabase db push",
                   "npx supabase db push", "npx -y wrangler deploy", "sh -c \"supabase db push\"",
                   "echo x | xargs supabase db push", "find . -name x -exec rm -rf {} +", "eval git push"]
         res = {c: guard(c, **seat_env) for c in denied}
@@ -1072,7 +1453,7 @@ def check_seat_limits():
                all(rc == 2 and "seat-deny" in err for rc, err in res.values()))
         # FOUND 2026-10-28 (repo analysis): quoting or escaping the command word, a full path, or another
         # order of rm's flags walked past the deny list
-        denied = ['"git" push origin x', "\\git push origin x", "g''it push origin x", "/usr/bin/ssh vps true",
+        denied = ['"git" push origin x', "\\git push origin x", "g''it push origin x", "/usr/bin/ssh prod true",
                   "rm -fr build", "rm -r -f build", "rm --recursive --force build", "rm -Rf build",
                   "sudo -u root rm -rf /x", "env -i git push origin x", "nice -n 5 git push origin x"]
         res = {c: guard(c, **seat_env) for c in denied}
@@ -1100,7 +1481,7 @@ def check_memory():
 
     It said OK for eight days while nothing was kept (it asked the worker, which was
     fine), then again on 2026-10-02 because it took a GLOBAL max: another project's
-    activity, this very session's worktree, made ContentOS look healthy while it had
+    activity, this very session's worktree, made the pilot project look healthy while it had
     captured nothing since 09-10, and the worker was failing to store anything at all.
     Executed against a fake $HOME holding a claude-mem database and log."""
     print("\n  MEMORY — does the capture check tell the truth?")
@@ -1243,7 +1624,7 @@ def check_memslice():
 def check_memlife():
     """Does memory stay TRUE as the project changes, or only grow?
 
-    FOUND 2026-10-03: the slice built for a ContentOS card still told the seat the UI seat was
+    FOUND 2026-10-03: the slice built for a pilot-project card still told the seat the UI seat was
     "opencode + glm-5.3-flash" (one stale line inside an otherwise correct drawer), and a search
     ranks a well-phrased retired decision above the current one. Each mechanism is executed here:
     the pure parts on fixed text, the rest against a REAL throwaway MemPalace (own palace, own
@@ -1592,7 +1973,7 @@ def check_fact_review():
 def check_launcher():
     """Is the CTO MODEL told what pre-flight found, or only the human at the terminal?
 
-    FOUND 2026-10-03 on the first real ContentOS session: bin/cto printed the pre-flight to the
+    FOUND 2026-10-03 on the first real session on the pilot project: bin/cto printed the pre-flight to the
     terminal and told the model "Pre-flight output is above" - but a model is handed only the
     prompt. The CTO never saw it and greeted the owner with "pre-flight clean" over two guardrail
     failures and a memory check reading NOT capturing. Nothing tested the launcher, so nothing
@@ -1639,15 +2020,15 @@ def check_launcher():
             return r, (out.read_text() if out.exists() else "")
 
         r, prompt = launch('print("  ok    stub: all fine")\n'
-                           'print("  FAIL  stub: hook drift in ContentOS (13 hooks differ)")\n'
+                           'print("  FAIL  stub: hook drift in acme-notes (13 hooks differ)")\n'
                            'raise SystemExit(1)\n')
         expect = lambda desc, cond: (ok if cond else bad)(f"launcher: {desc}")
         expect("the model is launched with the failing check IN its prompt",
-               "stub: hook drift in ContentOS" in prompt and "PRE-FLIGHT RESULT" in prompt)
+               "stub: hook drift in acme-notes" in prompt and "PRE-FLIGHT RESULT" in prompt)
         expect("...and is no longer told to look 'above' (it cannot see the terminal)",
                "Pre-flight output is above" not in prompt)
         expect("passed checks are counted, not listed", "stub: all fine" not in prompt and "1 checks passed" in prompt)
-        expect("the human still sees the pre-flight live on the terminal", "stub: hook drift in ContentOS" in r.stdout)
+        expect("the human still sees the pre-flight live on the terminal", "stub: hook drift in acme-notes" in r.stdout)
         kept = proj / ".git" / "ai-teammates" / "preflight.txt"
         expect("the full output is kept where the CTO can read it",
                kept.exists() and "FAIL" in kept.read_text())
@@ -1897,7 +2278,7 @@ def main():
     print(f"  {len(s)} seats defined")
     for check, args in ((check_static, (s,)), (check_tracked, ()), (check_hook, ()), (check_models, (s,)),
                         (check_parity, ()), (check_parity_rules, ()), (check_guard, ()), (check_loopguard, ()),
-                        (check_cards, ()), (check_seat_limits, ()), (check_memory, ()), (check_memslice, ()),
+                        (check_cards, ()), (check_delegation_report, ()), (check_setup, ()), (check_seat_limits, ()), (check_memory, ()), (check_memslice, ()),
                         (check_memlife, ()), (check_fact_review, ()), (check_launcher, ()),
                         (check_board_digest, ()), (check_dashboard, ()), (check_session_end, ()), (check_scrubber, ()),
                         (check_prepush, ())):

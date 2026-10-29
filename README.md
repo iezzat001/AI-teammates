@@ -176,7 +176,22 @@ cd ~/code/your-project
 This adds `.ai-teammates/` to your project, registers the hooks, and puts `cto` and
 `ai-teammates` in `~/.local/bin` (add that folder to your `PATH` if the installer says so).
 
-**3. Commit the install:**
+**3. Choose memory, team and scope** (once; it asks, with what was detected as each default):
+
+```bash
+cto setup
+```
+
+- **Memory:** claude-mem, MemPalace, or both (the default), scoped to this project. It prints the
+  install command of any that is missing.
+- **Team:** the CTO's model, which seats to keep, each seat's harness and model, and the model per
+  card tier. `--verify-models` makes one short call per model before anything is written.
+- **Scope:** the production and integration branches, what counts as product code, whether the CTO
+  may edit product code itself (`allow` / `ask` / `block`), and the checks run on every landed card.
+
+It ends with `cto --doctor`. In scripts: `cto setup --yes`, or `--answers answers.json`.
+
+**4. Commit the install:**
 
 ```bash
 git add .ai-teammates .claude/settings.json opencode.json
@@ -185,7 +200,7 @@ git commit -m "chore: install AI-teammates"
 
 Until this is committed, new worktrees start without guardrails.
 
-**4. Create the integration branch and its own checkout:**
+**5. Create the integration branch and its own checkout:**
 
 Work flows `feature branch -> development -> main`. The CTO works in the `development`
 checkout, never on `main`:
@@ -197,7 +212,7 @@ git worktree add ../your-project-dev development
 
 Skip this step if your project already has a `development` branch with a checkout.
 
-**5. Start the CTO:**
+**6. Start the CTO:**
 
 ```bash
 cd ../your-project-dev
@@ -213,6 +228,7 @@ cto             # start talking
 cto                      # interactive session: give it a task, read the report, give it the next
 cto "fix the typo in the pricing page"    # one task, headless, exits when done
 cto --doctor             # check the environment
+cto setup                # change memory, team or scope (your own terminal: an agent may not run it)
 ai-teammates install     # upgrade the hooks and docs in this project (your config is kept)
 ai-teammates uninstall   # remove everything cleanly
 ```
@@ -230,7 +246,7 @@ python3 .ai-teammates/hooks/seat.py run --card UI-1   # runs, checks scope, exec
 ## Configure
 
 Everything project-specific lives in `.ai-teammates/config.json`. The installer fills it
-in from your repository; check it before real work:
+in from your repository and `cto setup` asks about the rest; check it before real work:
 
 ```json
 {

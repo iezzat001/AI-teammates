@@ -47,7 +47,7 @@ def check_ssh(host: str, user: str, port: int = 22, timeout: float = 4.0, alias:
     Use the ~/.ssh/config alias when one is given (facts.json "ssh_alias"): it
     carries the right key. FOUND 2026-09-24: this logged in as plain user@host,
     so ssh offered the default key, was rejected, and every session reported
-    "login FAILED" for a VPS that the `vps` alias reached fine - weeks of a
+    "login FAILED" for a server that the `prod` alias reached fine - weeks of a
     false alarm that also told agents the server was unreachable."""
     if not host:
         return None, "not set"

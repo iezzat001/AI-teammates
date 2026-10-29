@@ -2,10 +2,12 @@
 """Run one task card on a seat, and report what happened as FACTS.
 
     python3 .ai-teammates/hooks/seat.py run <seat> --card <ID>     (dispatches here)
+    python3 .ai-teammates/hooks/seat.py land <ID>                   merge it, checked on the merged result
+    python3 .ai-teammates/hooks/seat.py verify <PARENT>             the whole outcome, once every child landed
     python3 .ai-teammates/hooks/seat.py card-clean <ID> [--abandon]
 
 What this replaces: `seat.py run <seat> "<one line>"`, which launched a harness and
-recorded `clean = exit 0 and no guard hits`. On ContentOS that marked a seat that
+recorded `clean = exit 0 and no guard hits`. On the pilot project that marked a seat that
 changed nothing as clean, joined a whole spec into one string, never linked a run
 to a board card, reused one scratch worktree forever, and could not stop a run.
 
@@ -124,6 +126,22 @@ def last_run(cid: str):
             if r.get("card") == cid:
                 last = r
     return last
+
+
+def merged(cid: str) -> bool:
+    """A card has landed when its last run is done and that commit is in the integration branch."""
+    r = last_run(cid)
+    return bool(r and r.get("status") == "done" and r.get("head")
+                and git("merge-base", "--is-ancestor", r["head"], BASE).returncode == 0)
+
+
+def plan_status(cid: str) -> str:
+    """written | running | merged | the last run's status. Running is read from the process table."""
+    ps = subprocess.run(["ps", "-eo", "command"], capture_output=True, text=True).stdout
+    if re.search(rf"seat\.py run\b.*--card {re.escape(cid)}(\s|$)", ps, re.M):
+        return "running"
+    r = last_run(cid)
+    return "written" if not r else "merged" if merged(cid) else r.get("status") or "?"
 
 
 def archive(wt: Path, branch: str, scope=None) -> str:
@@ -269,6 +287,16 @@ def run(agents: dict, cid: str, seat_name: str = "") -> int:
         print(f"  card {cid} is not ready to run ({len(problems)} problem(s)). Nothing was launched:")
         for p in problems:
             print(f"    - {p}")
+        return 1
+    if cardmod.is_parent(card):
+        print(f"  card {cid} is a parent card: the plan, never run on a seat. Nothing was launched.\n"
+              f"  Run its children: {', '.join(card['children'])}  (card.py tree {cid})")
+        return 1
+    # A card's worktree is cut from BASE, so it sees a dependency's work only once that has merged
+    waiting = [d for d in card.get("depends_on") or [] if not merged(d)]
+    if waiting:
+        print(f"  card {cid} depends on {', '.join(waiting)}, not merged into {BASE} yet. Nothing was launched.\n"
+              f"  Its worktree would not contain that work: land {waiting[0]} first.")
         return 1
     name = seat_name or card["seat"]
     spec = agents.get(name)
@@ -451,6 +479,173 @@ def clean(cid: str, abandon: bool) -> int:
                 print(memlife.file_card(cid))
         except Exception as e:
             print(f"  (not filed to memory: {e}; run `memlife.py file {cid}` when it is back)")
+    return 0
+
+
+# --- landing -------------------------------------------------------------------------------
+
+def integration_checkout():
+    """The worktree that has BASE checked out, if any: its files must move with the branch."""
+    cur = None
+    for line in git("worktree", "list", "--porcelain").stdout.splitlines():
+        if line.startswith("worktree "):
+            cur = Path(line[9:])
+        elif line == f"branch refs/heads/{BASE}":
+            return cur
+    return None
+
+
+def annotate(cid: str, **facts) -> None:
+    """Add facts to the card's last run row: how it landed is part of that run's record."""
+    lines = seat.RUNS.read_text(encoding="utf-8").splitlines()
+    for i in range(len(lines) - 1, -1, -1):
+        try:
+            r = json.loads(lines[i])
+        except ValueError:
+            continue
+        if r.get("card") == cid:
+            lines[i] = json.dumps({**r, **facts}, ensure_ascii=False)
+            break
+    seat.RUNS.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _drop(wt: Path) -> None:
+    if wt.exists():
+        git("worktree", "remove", "--force", str(wt))
+    git("worktree", "prune")
+
+
+def checks_on(wt: Path, card: dict, extra=()) -> tuple:
+    """Run the card's acceptance, then the project's extra checks, in wt: (results, '' or what failed)."""
+    err = run_setup(wt)
+    if err:
+        return [], err
+    own = list(card.get("acceptance") or [])
+    acc = cardmod.run_acceptance({"acceptance": own + [{"run": x} for x in extra]}, wt)
+    for i, a in enumerate(acc):
+        if a["rc"] != 0:
+            what = "acceptance" if i < len(own) else "integration check"
+            return acc, f"{what} failed on the merged result: {a['run'][:60]} (exit {a['rc']}): {a['tail'][-100:]}"
+    return acc, ""
+
+
+def land(cid: str) -> int:
+    """Merge a done card into BASE only if its checks pass on the MERGED result.
+
+    It used to be the CTO typing `git merge` (cto.md step 4), and nothing re-ran the card's checks
+    after it: the card's worktree was cut from BASE when it started, and BASE may have moved since.
+    The merge happens in a scratch worktree; BASE moves only when everything passed there, so a
+    failure or a conflict leaves it exactly as it was. A conflict is never resolved here.
+    config.json "integration_checks" run there too: two cards can each pass alone and break each
+    other, and this is where the second one is caught. Landing a parent's last child verifies it."""
+    try:
+        card = cardmod.load(cid)
+    except Exception as e:
+        sys.exit(f"{e}")
+    spec = seat.load_agents().get(card.get("seat")) or {}
+    br, prev, co = card_branch(spec, cid), last_run(cid), integration_checkout()
+    if merged(cid):
+        print(f"  {cid} is already merged into {BASE}")
+        return clean(cid, False)
+    waiting = [d for d in card.get("depends_on") or [] if not merged(d)]
+    refuse = (f"its last run is {(prev or {}).get('status') or 'missing'}, not done" if not prev
+              or prev.get("status") != "done" or not prev.get("head")
+              else f"it depends on {', '.join(waiting)}, not merged into {BASE} yet" if waiting
+              else f"the integration checkout {co} has uncommitted changes"
+              if co and git("status", "--porcelain", "--untracked-files=no", cwd=co).stdout.strip() else "")
+    if refuse:
+        print(f"  card {cid} cannot land: {refuse}. Nothing was merged.")
+        return 1
+
+    tip = git("rev-parse", BASE).stdout.strip()
+    scratch = REPO.parent / f"{REPO.name}-land-{cid.lower()}"
+    _drop(scratch)
+    r = git("worktree", "add", "--detach", str(scratch), tip)
+    if r.returncode != 0:
+        sys.exit(f"could not create the scratch worktree {scratch}:\n{r.stderr.strip()}")
+    status, reason, acc, sha = "failed", "", [], ""
+    try:
+        m = git("merge", "--no-ff", "-q", "-m", f"Land {cid}: {card.get('title') or card['goal'][:60]}", br, cwd=scratch)
+        conflicts = git("diff", "--name-only", "--diff-filter=U", cwd=scratch).stdout.split()
+        if conflicts:
+            git("merge", "--abort", cwd=scratch)
+            status, reason = "blocked", f"merge-conflict | {', '.join(conflicts)}"
+            loopguard.make_record(f"land-{cid}", {}, "merge-conflict", "human",
+                                  f"merging {br} into {BASE} conflicts in {', '.join(conflicts)}", tried=[],
+                                  need=f"resolve the merge of {br} into {BASE} by hand: {', '.join(conflicts)}",
+                                  card=cid, who="cto")
+        elif m.returncode != 0:
+            reason = f"merge failed: {(m.stderr or m.stdout).strip()[:120]}"
+        else:
+            acc, reason = checks_on(scratch, card, _config.load().get("integration_checks") or [])
+            if not reason:
+                sha = git("rev-parse", "HEAD", cwd=scratch).stdout.strip()
+                adv = (git("merge", "--ff-only", "-q", sha, cwd=co) if co
+                       else git("update-ref", f"refs/heads/{BASE}", sha, tip))
+                if adv.returncode != 0:
+                    reason = f"{BASE} could not move to the merge: {(adv.stderr or adv.stdout).strip()[:120]}"
+                else:
+                    status = "merged"
+    finally:
+        _drop(scratch)
+
+    passed = sum(1 for a in acc if a["rc"] == 0)
+    facts = {"status": status, "ts": now_iso(), "reason": reason, "accept": [{"run": a["run"], "rc": a["rc"]} for a in acc]}
+    if status == "merged":
+        annotate(cid, merged=sha, land=facts)
+        board.set_state(cid, "done", f"landed {facts['ts'][:16]}Z: {sha[:8]} on {BASE}, "
+                                     f"acceptance {passed}/{len(acc)} on the merged result")
+        print(f"  LANDED {cid}: {br} merged into {BASE} @ {sha[:8]} · checks {passed}/{len(acc)} on the merged result")
+        rc, par = clean(cid, False), card.get("parent")
+        try:
+            kids = cardmod.load(par).get("children") or [] if par else []
+        except Exception:
+            kids = []
+        if kids and all(merged(k) for k in kids):
+            print(f"  {cid} was the last child of {par} to land: verifying the whole outcome")
+            return verify(par) or rc
+        return rc
+    annotate(cid, land=facts)
+    board.set_state(cid, "blocked", f"land {facts['ts'][:16]}Z: {status} | {reason}"[:300])
+    print(f"  NOT LANDED {cid}: {reason}\n  {BASE} is unchanged.")
+    if status == "blocked":
+        print("  The conflict is the owner's to resolve; it is recorded for the next session.")
+    return EXIT.get(status, 1)
+
+
+def verify(pid: str) -> int:
+    """A parent card's acceptance (the whole outcome) on BASE, once every child has landed.
+
+    Each card's checks run in its own worktree, and nothing used to check the merged whole: the only
+    git hook judges branch rules, not behaviour. Pass: the parent is done. Fail: it is not, and the
+    board names the failing command; the fix is a new child card."""
+    try:
+        card = cardmod.load(pid)
+    except Exception as e:
+        sys.exit(f"{e}")
+    waiting = [k for k in card.get("children") or [] if not merged(k)]
+    refuse = (f"{pid} is not a parent card (seat.py land checks one card)" if not cardmod.is_parent(card)
+              else f"{pid} has no acceptance: nothing proves the whole outcome" if not card.get("acceptance")
+              else f"{', '.join(waiting)} not merged into {BASE} yet" if waiting else "")
+    if refuse:
+        print(f"  cannot verify {pid}: {refuse}. Nothing was run.")
+        return 1
+    scratch = REPO.parent / f"{REPO.name}-verify-{pid.lower()}"
+    _drop(scratch)
+    r = git("worktree", "add", "--detach", str(scratch), BASE)
+    if r.returncode != 0:
+        sys.exit(f"could not create the scratch worktree {scratch}:\n{r.stderr.strip()}")
+    try:
+        acc, reason = checks_on(scratch, card)
+    finally:
+        _drop(scratch)
+    passed, ts = sum(1 for a in acc if a["rc"] == 0), now_iso()[:16]
+    if reason:
+        board.set_state(pid, "blocked", f"verify {ts}Z: failed | {reason}"[:300])
+        print(f"  VERIFY FAILED {pid}: {reason}\n  The parent is not done. Write a child card that fixes it.")
+        return 1
+    board.set_state(pid, "done", f"verify {ts}Z: whole outcome {passed}/{len(acc)} on {BASE}")
+    print(f"  VERIFIED {pid}: whole outcome {passed}/{len(acc)} on {BASE}. The parent is done.")
     return 0
 
 

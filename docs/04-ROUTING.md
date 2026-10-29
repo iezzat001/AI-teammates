@@ -39,14 +39,14 @@ from the user's setup (used twice in three days) and ~24k the whole `board.json`
 cards closed); a 111-call session re-read 35.7M tokens from cache. So the CTO now starts with no
 MCP servers (`cto.mcp`: `none` by default, `inherit`, or a path to an MCP config file), its brief
 carries only the open board cards (`board.py show <ID>` for one in full), and the guardrails and
-routing docs are read when needed. Replaying the startup on a copy of ContentOS: 138k -> 38k
+routing docs are read when needed. Replaying the startup on a copy of the pilot project: 138k -> 38k
 tokens of context, $0.48 -> $0.05 (Haiku; the ratio is what carries over).
 
 Skills cost the same way: every skill's description is listed in every call. A project hides what
 it does not need without touching other projects: `"enabledPlugins": {"<plugin>@<marketplace>":
 false}` in its `.claude/settings.json` (project settings outrank user settings; `install.sh` keeps
 the key) and `"skillOverrides": {"<skill>": "user-invocable-only"}` for user-level skills (hidden
-from the model, `/name` still works for the human). On ContentOS, Cloudflare's 28 skill entries
+from the model, `/name` still works for the human). On the pilot project, a hosting provider's 28 skill entries
 cost 4,174 tokens per Opus 5.5 call (2026-10-06). Measure on the model that will run: Claude Code
 caps the skill listing for smaller context windows, so on Haiku the same change looked like 460.
 
@@ -61,7 +61,7 @@ cost floor on Haiku ($0.058 -> $0.026), and the read-only audit seat runs with
 `--strict-mcp-config --tools Read,Glob,Grep,Bash`: it had been inheriting every MCP server of the
 owner's setup, write-capable ones included. `cto.claude_md_excludes` keeps a personal global
 `CLAUDE.md` that says nothing about the codebase out of CTO sessions (2,181 tokens per call for
-ContentOS's owner).
+the pilot project's owner).
 
 **Route by task value.** A strong model earns its cost on an audit that finds a real
 bug. It does not earn it on rewording three strings. When in doubt, start one tier

@@ -5,7 +5,7 @@
 ```bash
 cd ~/your-project
 /path/to/AI-teammates/install.sh
-cto --doctor          # check the environment
+cto setup             # memory, team and scope, once; ends with cto --doctor
 cto                   # start talking
 ```
 
@@ -17,7 +17,14 @@ installs a git `pre-push` hook (never over one it did not write). Runtime state
 lives in `.git/ai-teammates/`, shared by every worktree and never committed.
 
 Re-running upgrades hooks, docs and `cto.md`. It never touches your config,
-board, `RULES.md`, or seat specs you already have.
+board, `RULES.md`, or seat specs you already have, and does not bring back a seat you dropped.
+
+`cto setup` asks the questions the installer does not: which memory (claude-mem, MemPalace or
+both, scoped to this project), which seats to keep and on which harness and model, the model per
+card tier, the branches, what counts as product code, the delegation policy and the integration
+checks. Each default is what is configured now, so re-running it changes only what you change.
+`--yes` takes every default; `--answers file.json` scripts it (the keys are in `setup.py`). It is
+yours, not an agent's: it refuses inside an agent session, and the guard asks you if one tries.
 
 ---
 
@@ -42,7 +49,8 @@ check ran the guardrail against a real commit rather than reading its source and
 assuming.
 
 Then describe work in plain language. The CTO decides whether to do it or
-delegate it, and tells you which.
+delegate it, and tells you which. On a codebase it has not seen, start with the survey in
+[08-NEW-PROJECT](08-NEW-PROJECT.md): it reads the code and proposes the team and scope.
 
 ---
 
@@ -82,6 +90,15 @@ override the guardrail — and an ignored guardrail is worse than none.
 default model until you name one; see [04-ROUTING](04-ROUTING.md) for the measured choice.
 Verify a model id resolves before you configure it (`claude --model <id> -p hi`). Our own
 routing doc once named a model that had never existed, for weeks.
+
+**`integration_checks`** (optional): project commands, such as `["npm run typecheck", "npm test"]`,
+that `seat.py land` runs on the merged result every time a card lands. Two cards can each pass
+their own checks and break each other; this is where the second one is refused.
+
+**`delegation`** (optional): `{"cto_product_edits": "allow" | "ask" | "block"}` decides what happens
+when the CTO itself edits product code, in any checkout: `allow` (the default), `ask` you each time,
+or `block` (product code arrives only through cards). `seat.py report --delegation` shows how much
+product code reached the integration branch through cards and how much the CTO wrote.
 
 ---
 

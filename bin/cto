@@ -4,6 +4,7 @@
 #   cto                 interactive session — you talk, it works, you talk again
 #   cto "do the thing"  one task, headless, exits when done
 #   cto --doctor        check the environment and leave
+#   cto setup           choose memory, team and scope once after install (then runs --doctor)
 #
 # Runs from anywhere inside the project. Pre-flight happens before you type.
 
@@ -18,6 +19,14 @@ HOOKS="$CFG/hooks"
 # Claude Code runs from REPO, whatever directory `cto` was started in: its
 # project settings and hook paths are resolved from the session's directory.
 cd "$REPO"
+
+# One-time choices after install. The owner's: setup.py refuses inside an agent session.
+if [ "${1:-}" = "setup" ]; then
+  shift
+  python3 "$HOOKS/setup.py" "$@" || exit $?
+  case " $* " in *" --no-doctor "*) exit 0 ;; esac
+  exec "$0" --doctor
+fi
 
 # The CTO works where work is authored: the integration checkout. Started on
 # the production branch it can commit nothing (the flow guard blocks it), so on
@@ -130,7 +139,7 @@ if [ "${1:-}" = "--doctor" ]; then
 fi
 
 # --- pre-flight ------------------------------------------------------------
-# FOUND 2026-10-03 on the first real ContentOS session: this block printed to the TERMINAL and
+# FOUND 2026-10-03 on the first real session on the pilot project: this block printed to the TERMINAL and
 # the brief said "Pre-flight output is above" - but the model is only ever handed the brief, so
 # the CTO never saw a line of it and greeted the owner with "pre-flight clean" over two guardrail
 # failures and a memory check reading NOT capturing. A check reading a source that cannot
@@ -305,7 +314,7 @@ export CTO_PROJECT="$REPO"
 export CLAUDE_AGENT_NAME=cto
 
 if [ $# -gt 0 ]; then
-  # Headless: nobody is there to answer a permission prompt. On ContentOS this
+  # Headless: nobody is there to answer a permission prompt. On the pilot project this
   # mode produced 101 of 230 tool errors - approval denials the model answered by
   # rephrasing, up to nine in a row. loopguard turns the first denial into a
   # BLOCKED ask and ends the run on the next, and the report below says what the

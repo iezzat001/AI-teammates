@@ -8,7 +8,7 @@
     python3 tools/memory-bench/bench.py run         # score both arms, write results/<date>-<project>.md
     python3 tools/memory-bench/bench.py clean       # remove the benchmark fixtures
 
-Written for ContentOS (results/2026-10-02-contentos.md is that run); the project, its live
+Written for the pilot project (results/2026-10-02-pilot.md is that run); the project, its live
 memory scoping (.ai-teammates/config.json "memory") and the questions are now inputs.
 
 Both systems are queried through memslice.py, the adapter the CTO actually uses to

@@ -96,7 +96,11 @@ python3 .ai-teammates/hooks/seat.py run --card DOC-2
 The runner handles what has bitten us:
 
 - checks the **process table** for an existing run of that seat
-- refuses a card that is too big to be one task, **before** spending anything
+- refuses a card that is too big to be one task, **before** spending anything; `card.py
+  check` prints the `card.py split` command that turns it into a parent and child cards,
+  and a split that leaves a file uncovered or lets two parallel children edit one file is refused
+- refuses a parent card (the plan for a bigger task: `card.py tree <ID>`), and a child
+  card whose `depends_on` cards are not merged into the integration branch yet
 - gives each card its own worktree and branch off the integration branch, and
   archives (tags) an earlier unfinished attempt instead of reusing its leftovers
 - kills a run that passes its wall-time or tool-call budget, and its children
@@ -104,8 +108,20 @@ The runner handles what has bitten us:
   acceptance commands, and only then commits as `seat:<name>`
 - records status, cost, branch, files and acceptance results on the run, and moves
   the board card
+- `seat.py land <ID>` merges a done card in a scratch worktree, re-runs its acceptance on
+  the merged result, and only then moves the integration branch. A failure or a conflict
+  leaves the branch as it was; a conflict is recorded for the owner, never resolved.
+  `config.json` `integration_checks` run there too, every time a card lands
+- `seat.py verify <parent>` runs a parent card's acceptance (the whole outcome) on the
+  integration branch once every child has landed; `land` runs it after the last one
 
 ---
+
+## Choosing the team
+
+`cto setup` keeps or drops each seat (a dropped one moves to `.ai-teammates/agents/off/` and an
+upgrade leaves it there), sets each seat's harness and model in its spec, and the model per card
+tier (`seat_models`). Cards run only on Claude Code seats.
 
 ## Adding a teammate
 

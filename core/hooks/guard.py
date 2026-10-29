@@ -17,7 +17,6 @@ Overrides - both logged to .ai-teammates/events.jsonl:
   anything: AI_TEAMMATES_OVERRIDE='<why>' set by the HUMAN when launching the
             session. It is the harness's environment, so an agent cannot set it
             from inside - prefixing a command with it does nothing.
-            (CONTENTOS_OVERRIDE is still read, as the legacy name.)
 """
 import json
 import os
@@ -59,7 +58,7 @@ SESSION_ID = ""      # set from the hook payload in main(); loopguard keys its c
 def block(rule, message, fix):
     log("blocked", {"rule": rule, "message": message})
     # Counted: a block that fires before the tool runs produces no failure event,
-    # so a retry-rephrase-retry loop against a guard was invisible. On ContentOS a
+    # so a retry-rephrase-retry loop against a guard was invisible. On the pilot project a
     # block led to the human being asked 1 time in 10, and once to an edit of
     # guard.py itself.
     try:
@@ -216,8 +215,8 @@ def _commands(cmd, depth=0):
     """Every command this line would RUN: each simple command, plus what a shell (-c), eval,
     xargs, npx, find -exec or a $(...) substitution is told to run. Arguments are not commands.
 
-    FOUND 2026-10-04 by the ContentOS CTO: the first version tried every word as a possible
-    command start, with quoted text read as code. With `supabase*` in ContentOS's denies,
+    FOUND 2026-10-04 by the pilot project's CTO: the first version tried every word as a possible
+    command start, with quoted text read as code. With `supabase*` in the project's denies,
     `grep -rn "supabase" src/` became the command `supabase src/`, and the read-only audit seat
     could not read the product's whole auth layer: refused three times per run, no verdict.
     A guard that fires on ordinary work gets worked around (failure-catalogue #8). The bypass
@@ -451,7 +450,7 @@ def shell_guardrail_write(cmd):
     A file the line merely NAMES is not a write (`cat config.json`, `python3 .ai-teammates/hooks/card.py`
     runs a hook, it does not change one). It counts when the same simple command writes (a redirect,
     sed -i, cp, git checkout, ...) or is an interpreter, and when an interpreter is fed a heredoc that
-    names one: that is how the ContentOS CTO edited JSON files."""
+    names one: that is how the pilot project's CTO edited JSON files."""
     for m in _HEREDOC.finditer(cmd):
         line = cmd[cmd.rfind("\n", 0, m.start()) + 1:m.start()]
         head = [w for _, w, _ in _parts(line) if w]
@@ -460,6 +459,11 @@ def shell_guardrail_write(cmd):
     for blank, w, raw in _parts(_HEREDOC.sub(lambda m: m.group(0).split("\n", 1)[0], cmd)):
         if not w:
             continue
+        # `cto setup` rewrites config.json and the seat specs, and running a hook script is otherwise
+        # exempt below: an agent could have changed every setting through it without asking
+        if (w[0] in ("cto", "ai-teammates") and w[1:2] == ["setup"]) \
+                or any(x.endswith(".ai-teammates/hooks/setup.py") for x in raw):
+            return ".ai-teammates/config.json"
         words = list(raw)
         if w[0] in ("python", "python3") and len(w) > 1 and w[1].startswith(".ai-teammates/hooks/") \
                 and w[1].endswith(".py"):
@@ -497,8 +501,8 @@ def check_guardrail_files(tool, ti):
 def check_frontend_edit(tool, ti):
     """Product code is edited on a feature branch, never in the main checkout.
 
-    SUPERSEDED 2026-09-06: the old rule was "UI work routes through Lovable
-    MCP". Lovable was dropped from production on 2026-08-25; the block stayed
+    SUPERSEDED 2026-09-06: the old rule was "UI work routes through the
+    UI builder's MCP". The UI builder was dropped from production on 2026-08-25; the block stayed
     and its advice pointed at a tool that no longer exists.
 
     What the rule protects: guarded paths (config "guarded_paths") get edited
@@ -546,6 +550,59 @@ def check_frontend_edit(tool, ti):
         "Work in a feature worktree (git worktree add ../<project>-<name> -b "
         "feat/<name>), or delegate to a seat: seat.py run <seat> \"<task>\".",
     )
+
+
+def _product_file(p):
+    """(checkout, path) when p is a product file (guarded, not edit_exempt) of this repository, else None."""
+    try:
+        loc = _locate(p)
+    except Exception:
+        loc = False
+    if loc is None:
+        return None
+    top, rel = (loc[0], loc[1]) if loc else (REPO, rel_path(p))
+    if not rel.startswith(_config.guarded()) or any(re.search(x, rel) for x in _config.load()["edit_exempt"]):
+        return None
+    return top, rel
+
+
+def check_delegation(tool, ti):
+    """The owner's policy for the CTO writing product code itself: config.json
+    "delegation": {"cto_product_edits": "allow" | "ask" | "block"}, allow when unset.
+
+    MEASURED 2026-10-17: on one large owner request the CTO delegated two cards and wrote 982 of
+    1,252 product lines itself (78%), in a feature worktree it made, where no rule applied; the
+    "delegate when" rules in cto.md are advice to the model. The CTO's session only: a seat works
+    inside its card's scope. Resolving a conflict while a merge is in progress is not authoring."""
+    policy = (_config.load().get("delegation") or {}).get("cto_product_edits") or "allow"
+    if policy not in ("ask", "block") or os.environ.get("CLAUDE_AGENT_NAME") != "cto" \
+            or os.environ.get("AI_TEAMMATES_SEAT") or os.environ.get("AI_TEAMMATES_CARD"):
+        return
+    hit, how = None, "edits"
+    if tool in ("Edit", "Write", "NotebookEdit", "MultiEdit"):
+        hit = _product_file(str(ti.get("file_path") or ti.get("path") or ti.get("notebook_path") or ""))
+    elif tool == "Bash":
+        for blank, w, raw in _parts(str(ti.get("command") or "")):
+            why = _write_reason(blank, w)
+            if why:
+                words = [x for r in raw for x in re.split(r"[<>|&]+", r) if x and not x.startswith("-")]
+                hit = next((f for f in (_product_file(x) for x in words[1:]) if f), None)
+                how = "would change, because %s," % why
+            if hit:
+                break
+    if not hit:
+        return
+    top, rel = hit
+    if subprocess.run([GIT, "-C", str(top), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                      capture_output=True).returncode == 0:
+        return
+    msg = ("This %s %s, product code. The owner's delegation policy (config.json delegation."
+           "cto_product_edits = %s) says product code reaches the project through cards." % (how, rel, policy))
+    if policy == "ask":
+        ask("delegation-policy", msg + " Approve to let the CTO write it itself this time.")
+    block("delegation-policy", msg,
+          "Write a card for it: python3 .ai-teammates/hooks/card.py new <ID> --seat <seat> ..., then "
+          "seat.py run --card <ID> and seat.py land <ID>. Resolving a merge conflict is allowed.")
 
 
 # `git push`, also as `git -C dir push` / `git -c k=v push`.
@@ -785,7 +842,7 @@ def check_git(tool, ti):
 
 
 HANDLERS = (check_blocked_gate, check_card_scope, check_card_shell, check_seat_denies,
-            check_guardrail_files, check_frontend_edit, check_git)
+            check_guardrail_files, check_frontend_edit, check_delegation, check_git)
 
 
 def main():
@@ -799,7 +856,7 @@ def main():
     tool = payload.get("tool_name") or payload.get("tool") or ""
     ti = payload.get("tool_input") or {}
 
-    override = os.environ.get("AI_TEAMMATES_OVERRIDE") or os.environ.get("CONTENTOS_OVERRIDE")
+    override = os.environ.get("AI_TEAMMATES_OVERRIDE")
     if override:
         log("override", {"tool": tool, "reason": override[:200]})
         sys.exit(0)

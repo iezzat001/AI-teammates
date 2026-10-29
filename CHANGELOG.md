@@ -18,6 +18,40 @@ All notable changes to this project are documented here. The format follows
   data, and its default folder exposed `config.json`.
 - `scripts/dashboard_demo.py`: the dashboard for an invented project, and the README screenshots.
 - The README explains how a task flows, and how a teammate differs from a Claude Code subagent.
+- Parent cards and dependencies: a parent card (`children`) holds the plan for a task bigger than
+  one card; a child names its `parent` and the siblings it `depends_on`. `card.py check` refuses
+  cycles, unknown dependencies and mismatched links; the runner refuses a parent, and a child whose
+  dependencies are not merged into the integration branch. `card.py tree <ID>` shows the plan;
+  `card.py new --parent` links both sides (#1).
+- `seat.py land <ID>`: merges a done card in a scratch worktree, re-runs its acceptance on the
+  merged result, and fast-forwards the integration branch only if they pass. A failure leaves the
+  branch unchanged; a conflict is never resolved, and writes a `merge-conflict` record for the
+  owner. The merge commit is recorded on the card's run row (#3).
+- The combined result is checked: `config.json` `integration_checks` run on the merged result
+  every time a card lands, and `seat.py verify <parent>` runs a parent card's acceptance on the
+  integration branch once every child has landed (automatically after the last). The parent is
+  done only when it passes (#4).
+- `card.py split <ID> --into ID-1,ID-2 [--files ...] [--independent]` turns an oversized card into
+  a parent and children that inherit its context, memory and out-of-scope list, with steps and
+  acceptance going to the child whose files they name. Without `--files` it proposes a grouping
+  by folder. A split that leaves a parent file uncovered, or lets two unordered siblings edit the
+  same file, is refused; `card.py check` applies the same checks to a parent, and prints the
+  exact `split` command for an oversized card (#2).
+- Delegation policy: `config.json` `delegation.cto_product_edits` (`allow`, the default; `ask`; or
+  `block`) applies to the CTO's own product-code edits in any checkout, by edit or by shell write.
+  Seats and merge-conflict resolution are exempt. `seat.py report --delegation [--days N]` shows
+  product lines that reached the integration branch per day, by seats versus by the CTO (#5).
+- `cto setup` (also `ai-teammates setup`): the choices a project makes once after install. Memory
+  (claude-mem, MemPalace or both, scoped to the project, with the install commands of what is
+  missing), the team (the CTO's model; per seat keep or drop, harness and model; the model per card
+  tier, optionally verified with one call each), and scope (branches, product paths, delegation
+  policy, integration checks). `--yes` and `--answers` for scripts. It refuses inside an agent
+  session, and the guard asks the owner when an agent runs it. A dropped seat stays dropped on
+  upgrade. `06-MEMORY.md` records the decision to keep both memory systems and how to set them up.
+
+### Removed
+
+- The legacy `CONTENTOS_OVERRIDE` variable; `AI_TEAMMATES_OVERRIDE` is the one override.
 
 ### Changed
 

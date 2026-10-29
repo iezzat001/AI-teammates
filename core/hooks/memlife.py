@@ -3,7 +3,7 @@
 
 THE DEFECT (Ahmed, 2026-10-03): a project evolves, and memory only ever grows. Search ranks by
 similarity, so a retired decision that is phrased well outranks the current one. Measured on
-ContentOS: the slice built for a card still told the seat the UI seat was "opencode +
+The pilot project: the slice built for a card still told the seat the UI seat was "opencode +
 glm-5.3-flash" - one stale line inside an otherwise correct drawer - and one drawer holds both
 the dead rule and its replacement. Deleting is not the answer (the history is real and sometimes
 the question), and re-ranking on age alone buries a decision that is old and still right.
