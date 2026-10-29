@@ -96,7 +96,9 @@ python3 .ai-teammates/hooks/seat.py run --card DOC-2
 The runner handles what has bitten us:
 
 - checks the **process table** for an existing run of that seat
-- refuses a card that is too big to be one task, **before** spending anything
+- refuses a card that is too big to be one task, **before** spending anything; `card.py
+  check` prints the `card.py split` command that turns it into a parent and child cards,
+  and a split that leaves a file uncovered or lets two parallel children edit one file is refused
 - refuses a parent card (the plan for a bigger task: `card.py tree <ID>`), and a child
   card whose `depends_on` cards are not merged into the integration branch yet
 - gives each card its own worktree and branch off the integration branch, and

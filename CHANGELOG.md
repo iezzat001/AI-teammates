@@ -26,6 +26,12 @@ All notable changes to this project are documented here. The format follows
   every time a card lands, and `seat.py verify <parent>` runs a parent card's acceptance on the
   integration branch once every child has landed (automatically after the last). The parent is
   done only when it passes (#4).
+- `card.py split <ID> --into ID-1,ID-2 [--files ...] [--independent]` turns an oversized card into
+  a parent and children that inherit its context, memory and out-of-scope list, with steps and
+  acceptance going to the child whose files they name. Without `--files` it proposes a grouping
+  by folder. A split that leaves a parent file uncovered, or lets two unordered siblings edit the
+  same file, is refused; `card.py check` applies the same checks to a parent, and prints the
+  exact `split` command for an oversized card (#2).
 
 ### Security
 

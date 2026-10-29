@@ -1077,7 +1077,7 @@ def check_cards():
         cfg_orig = cfg.read_text()
         subprocess.run([sys.executable, str(hooks / "card.py"), "new", "K", "--seat", "tester"], cwd=proj, env=base,
                        capture_output=True)
-        mk("K", children=["K-1", "K-2"], goal="every caller uses the renamed export",
+        mk("K", children=["K-1", "K-2"], goal="every caller uses the renamed export", scope={"edit": []},
            acceptance=[{"run": "grep -qx name=new src/api.txt && sh check.sh", "why": "renamed, and every caller follows"}])
         mk("K-1", parent="K", scope={"edit": ["src/api.txt", "src/use.txt"]},
            acceptance=[{"run": "grep -qx name=new src/api.txt && grep -qx uses=new src/use.txt"}])
@@ -1102,13 +1102,48 @@ def check_cards():
                "lands, and the parent is not done",
                dev() != before and rc == 1 and "K" in out and board_of("K")["status"] != "done"
                and "sh check.sh" in board_of("K")["note"])
-        mk("K", children=["K-1", "K-2", "K-3"], goal="every caller uses the renamed export",
+        mk("K", children=["K-1", "K-2", "K-3"], goal="every caller uses the renamed export", scope={"edit": []},
            acceptance=[{"run": "grep -qx name=new src/api.txt && sh check.sh", "why": "renamed, and every caller follows"}])
-        mk("K-3", parent="K", scope={"edit": ["src/use2.txt"]}, acceptance=[{"run": "grep -qx uses=new src/use2.txt"}])
+        mk("K-3", parent="K", depends_on=["K-2"], scope={"edit": ["src/use2.txt"]}, acceptance=[{"run": "grep -qx uses=new src/use2.txt"}])
         go("K-3", "write", STUB_WRITES=json.dumps({"src/use2.txt": "uses=new\n"}))
         rc, out = land("K-3")
         expect("verify: after a fix child lands, the parent's check passes and the parent is done",
                rc == 0 and board_of("K")["status"] == "done")
+
+        # SPLIT (issue #2): an oversized card was only refused ("split the card"); the split itself was prose.
+        # Verified in a sandbox: an 8-file, 15-step onboarding card is refused, and nothing helped turn it into
+        # well-formed children, or noticed a file no child covers or two parallel children editing one file.
+        files = [f"src/s/a{i}.txt" for i in range(1, 5)] + [f"src/t/b{i}.txt" for i in range(1, 5)]
+        mk("S", scope={"edit": files}, steps=[f"edit {files[i % 8]} step {i}" for i in range(15)],
+           acceptance=[{"run": "grep -q x src/s/a1.txt"}, {"run": "grep -q x src/t/b1.txt"}],
+           memory={"text": "the onboarding facts"}, out_of_scope=["the billing page"])
+        rc, out = cli("check", "S")
+        cmd = next((l.split("card.py ", 1)[1] for l in out.splitlines() if "card.py split S" in l), "")
+        expect("split: card.py check on an oversized card prints the exact split command",
+               rc == 1 and "--into S-1,S-2" in cmd and "--files" in cmd)
+        rc, out = cli(*shlex.split(cmd))
+        kid = lambda c: json.loads((proj / ".ai-teammates" / "cards" / f"{c}.json").read_text())
+        expect("split: an 8-file card becomes a parent plus children that each pass card.py check, linked",
+               rc == 0 and kid("S")["children"] == ["S-1", "S-2"] and kid("S-1")["parent"] == "S"
+               and kid("S-2")["depends_on"] == ["S-1"] and kid("S-1")["scope"]["edit"] == files[:4]
+               and kid("S-2")["memory"]["text"] == "the onboarding facts" and kid("S-2")["out_of_scope"] == ["the billing page"]
+               and all(cli("check", c)[0] == 0 for c in ("S", "S-1", "S-2")))
+        rfiles = [f"src/r/f{i}.txt" for i in range(1, 9)]
+        mk("R", scope={"edit": rfiles}, acceptance=[{"run": "grep -q x src/r/f1.txt"}, {"run": "grep -q x src/r/f8.txt"}])
+        rc, out = cli("split", "R", "--into", "R-1,R-2", "--files", "R-1=" + ",".join(rfiles[:4]), "R-2=" + ",".join(rfiles[4:7]))
+        expect("split: a split that leaves a file of the parent uncovered is refused, naming it, and writes nothing",
+               rc == 1 and "src/r/f8.txt" in out and not (proj / ".ai-teammates" / "cards" / "R-1.json").exists())
+        overlap = ["--files", "R-1=" + ",".join(rfiles[:4]), "R-2=" + ",".join(rfiles[3:])]
+        rc, out = cli("split", "R", "--into", "R-1,R-2", "--independent", *overlap)
+        expect("split: two unordered siblings editing the same file are refused, naming it",
+               rc == 1 and "src/r/f4.txt" in out and not (proj / ".ai-teammates" / "cards" / "R-1.json").exists())
+        rc, out = cli("split", "R", "--into", "R-1,R-2", *overlap)
+        expect("split: the same two, ordered by depends_on, are accepted", rc == 0 and cli("check", "R")[0] == 0)
+        before = (proj / ".ai-teammates" / "cards" / "T-2.json").read_text()
+        rc, out = cli("split", "T-2", "--into", "T-2a,T-2b")
+        expect("CONTROL: a card within the limits is not touched by split, and checks as before",
+               rc == 1 and (proj / ".ai-teammates" / "cards" / "T-2.json").read_text() == before
+               and cli("check", "T-2")[0] == 0 and not (proj / ".ai-teammates" / "cards" / "T-2a.json").exists())
 
 
 def check_seat_limits():

@@ -122,7 +122,10 @@ one card after you have split it twice. Always the review of what comes back.
 1. **Write the card first**, before any work:
    `python3 .ai-teammates/hooks/card.py new <ID> --seat <seat> --tier <tier> --title "..." --goal "..."`
    then fill in `.ai-teammates/cards/<ID>.json`. It also puts the card on the board.
-2. **`card.py check <ID>`.** If it says *split*, split it into two cards. Never
+2. **`card.py check <ID>`.** If it says *split*, it prints the `card.py split` command
+   that makes it a parent card and checked children (files grouped by folder: check the
+   grouping, then run it, and give each child its own goal). The split is refused if a file
+   is left uncovered, or if two children that could run at the same time edit one file. Never
    raise a limit to get past it: a card that is too big is two tasks, not a harder one.
    **A task that needs more than one card starts as a parent card**: the plan, never run.
    Add each piece with `card.py new <ID>-1 --seat ... --parent <ID>`, and on a child that

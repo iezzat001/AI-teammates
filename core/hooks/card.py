@@ -19,6 +19,8 @@ architecture, and cannot go looking: that is the point.
     card.py show <ID>         the exact prompt the seat will receive
     card.py accept [ID]       run the card's acceptance commands here (the seat's self-check)
     card.py tree <PARENT>     the plan: each child, what it waits for, and how far it got
+    card.py split <ID> --into ID-1,ID-2[,...] [--independent] [--files ID-1=a,b ID-2=c]
+                              an oversized card becomes a parent and checked children
     card.py ls
 
 A task bigger than one card is a PARENT card ("children": [...], never run on a seat) and
@@ -187,7 +189,7 @@ def is_parent(card: dict) -> bool:
     return bool(card.get("children"))
 
 
-def plan_problems(card: dict) -> list:
+def plan_problems(card: dict, known=None) -> list:
     """What is wrong with the links between this card and the others in its plan.
 
     FOUND 2026-10-17: the owner asked for one large outcome, the CTO wrote BOUND-1 and BOUND-2 and
@@ -197,6 +199,8 @@ def plan_problems(card: dict) -> list:
     cid, par, bad = card.get("id"), card.get("parent"), []
 
     def other(x):
+        if known and x in known:
+            return known[x]
         try:
             return card if x == cid else load(x)
         except Exception:
@@ -239,7 +243,116 @@ def plan_problems(card: dict) -> list:
     loop = cycle(cid, [])
     if loop:
         bad.append("depends_on cycle: " + " -> ".join(loop) + ". None of them could ever start")
+        return bad
+    if not is_parent(card):
+        return bad
+    kids = {k: other(k) for k in card.get("children") or []}
+    kids = {k: v for k, v in kids.items() if v}
+    # coverage: the parent's scope.edit is the plan (never run); every file of it belongs to some child
+    for f in edit_scope(card):
+        if not any(allowed_edit(v, f) for v in kids.values()):
+            bad.append(f"scope.edit {f}: no child card covers it")
+
+    def after(x, seen=()):
+        deps = set((other(x) or {}).get("depends_on") or []) - set(seen)
+        return deps.union(*[after(d, (*seen, *deps)) for d in deps]) if deps else set()
+    # overlap: two children not ordered by depends_on may be cut from the same base, and then conflict
+    ids = sorted(kids)
+    for i, a in enumerate(ids):
+        for b in ids[i + 1:]:
+            if b in after(a) or a in after(b):
+                continue
+            shared = [f for f in edit_scope(kids[a]) if allowed_edit(kids[b], f)] + \
+                     [f for f in edit_scope(kids[b]) if allowed_edit(kids[a], f)]
+            if shared:
+                bad.append(f"{a} and {b} both edit {shared[0]} and neither depends on the other: they could run "
+                           "from the same base and conflict. Order them with depends_on, or give the file to one")
     return bad
+
+
+def propose(card: dict, ids: list) -> dict:
+    """The card's files grouped by folder into len(ids) children: a proposal for the CTO to confirm."""
+    files = sorted(edit_scope(card), key=lambda f: (str(Path(f).parent), f))
+    size = -(-len(files) // len(ids))
+    return {k: files[i * size:(i + 1) * size] for i, k in enumerate(ids) if files[i * size:(i + 1) * size]}
+
+
+def split_command(cid: str, groups: dict, independent: bool = False) -> str:
+    return (f"python3 .ai-teammates/hooks/card.py split {cid} --into {','.join(groups)}"
+            + (" --independent" if independent else "")
+            + " --files " + " ".join(f"{k}={','.join(v)}" for k, v in groups.items()))
+
+
+def split(cid: str, into: list, files=None, independent: bool = False) -> int:
+    """Turn an oversized card into a parent and one child per ID. The CTO decides what each piece is
+    (only a model can judge that); this makes the result valid, and refuses a split with a gap or an
+    overlap before writing anything. Steps and acceptance go to the child whose files they name."""
+    try:
+        c = load(cid)
+    except Exception as e:
+        print(f"  {e}")
+        return 1
+    if is_parent(c) or not any("split the card" in p for p in validate(c, cid)):
+        print(f"  card {cid} is {'already a parent' if is_parent(c) else 'within the limits'}: nothing to split. "
+              "It was not changed.")
+        return 1
+    if len(into) < 2 or len(set(into)) != len(into) or cid in into:
+        print("  --into needs two or more new, distinct card IDs")
+        return 1
+    taken = [k for k in into if path(k).exists()]
+    if taken:
+        print(f"  card {taken[0]} already exists. Nothing was written.")
+        return 1
+    if files is None:
+        print(f"  proposed, by folder (nothing written). Check the grouping, then run:\n"
+              f"    {split_command(cid, propose(c, into), independent)}")
+        return 1
+    stray = [k for k in files if k not in into]
+    if stray:
+        print(f"  --files names {stray[0]}, which is not in --into. Nothing was written.")
+        return 1
+    L, b = limits(), budget(c)
+    names = lambda text, mine: any(f in str(text) for f in mine)
+    kids = {}
+    for i, k in enumerate(into):
+        mine = files.get(k, [])
+        kids[k] = {
+            "id": k, "title": f"{c.get('title') or cid} ({i + 1}/{len(into)})", "goal": c.get("goal", ""),
+            "seat": c.get("seat"), "tier": c.get("tier", "standard"), "parent": cid,
+            "depends_on": [] if independent or i == 0 else [into[i - 1]],
+            "scope": {"edit": mine, "read": list((c.get("scope") or {}).get("read") or [])},
+            "steps": [x for x in c.get("steps") or [] if names(x, mine)],
+            "memory": c.get("memory") or {},
+            "acceptance": [a for a in c.get("acceptance") or [] if names((a or {}).get("run"), mine)]
+            or [{"run": "<command that exits 0 when this piece is done>", "why": "<what it proves>"}],
+            "allow": c.get("allow") or [],
+            "budget": {"minutes": min(b["minutes"], L["max_minutes"]), "tool_calls": min(b["tool_calls"], L["max_tool_calls"])},
+            "out_of_scope": c.get("out_of_scope") or [], "stop_and_ask": c.get("stop_and_ask") or [],
+        }
+    parent = {**c, "children": list(into)}
+    problems = plan_problems(parent, {**kids, cid: parent})
+    if problems:
+        print(f"  split of {cid} refused ({len(problems)} problem(s)). Nothing was written:")
+        for x in problems:
+            print(f"    - {x}")
+        return 1
+    save(parent)
+    for k, v in kids.items():
+        save(v)
+        try:
+            import board
+            board.ensure(k, v["seat"], v["title"], f"part of {cid}")
+        except Exception:
+            pass
+    print(f"  {cid} is now a parent card; wrote {', '.join(into)}")
+    for k in into:
+        left = validate(kids[k], k)
+        print(f"    {k:<12} {len(kids[k]['scope']['edit'])} file(s) · " + ("ok" if not left else f"fix: {left[0]}"))
+    loose = [x for x in c.get("steps") or [] if not any(names(x, v["scope"]["edit"]) for v in kids.values())]
+    if loose:
+        print(f"  {len(loose)} step(s) name no file of any child; they stay on {cid}. Move them to a child.")
+    print(f"  give each child its own goal, then: card.py tree {cid}")
+    return 0
 
 
 def validate(card: dict, expect_id: str = "") -> list:
@@ -483,6 +596,18 @@ def main(argv) -> int:
                 continue
             print(f"    {k:<12} after {deps:<24} {cardrun.plan_status(k)}")
         return 0
+    if cmd == "split" and len(argv) >= 2 and "--into" in argv:
+        i = argv.index("--into")
+        into = argv[i + 1].split(",") if len(argv) > i + 1 else []
+        files = None
+        if "--files" in argv:
+            files = {}
+            for a in argv[argv.index("--files") + 1:]:
+                if a.startswith("--"):
+                    break
+                k, _, v = a.partition("=")
+                files[k] = [f for f in v.split(",") if f]
+        return split(argv[1], into, files, "--independent" in argv)
     if cmd in ("check", "show") and len(argv) >= 2:
         try:
             c = load(argv[1])
@@ -496,6 +621,11 @@ def main(argv) -> int:
             print(f"\n  card {argv[1]} is NOT ready ({len(problems)} problem(s)):")
             for p in problems:
                 print(f"    - {p}")
+            if not is_parent(c) and any("split the card" in p for p in problems):
+                n = max(2, -(-len(edit_scope(c)) // limits()["max_edit_files"]))
+                ids = [f"{argv[1]}-{i}" for i in range(1, n + 1)]
+                print(f"\n  to split it (files grouped by folder; check the grouping first):\n"
+                      f"    {split_command(argv[1], propose(c, ids))}")
             return 1
         b = budget(c)
         print(f"  card {argv[1]} ok · {len(edit_scope(c))} file(s) in scope · {len(c.get('acceptance') or [])} "
