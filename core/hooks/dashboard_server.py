@@ -305,6 +305,16 @@ class Handler(SimpleHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(body)
             return
+        # FOUND 2026-10-29: the pilot project's bookmark, /dashboard.html (its own page until the
+        # upgrade), answered 404; the page that ships is index.html at /. An old address leads there,
+        # unless the folder served still has a dashboard.html of its own.
+        if route == "/dashboard.html" and not (Path(self.directory) / "dashboard.html").exists():
+            query = self.path[len(route):]
+            self.send_response(302)
+            self.send_header("Location", "/" + query)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         super().do_GET()
 
     def log_message(self, *a):
