@@ -950,6 +950,64 @@ def check_cards():
         expect("guard: an unreadable card means no edits (fails closed)",
                scope(f"{wt2}/src/a.txt", card="/nonexistent/card.json") == 2)
 
+        # PLANS (issue #1): the plan for a big task lives in a parent card, not only in the CTO's context.
+        # FOUND 2026-10-17: BOUND-1..3 were linked only by board prose, and nothing refused a card
+        # started before the card whose work it needed had landed.
+        def cli(*a):
+            q = subprocess.run([sys.executable, str(hooks / "card.py"), *a], cwd=proj, env=base,
+                               capture_output=True, text=True)
+            return q.returncode, q.stdout
+        mk("C", children=["C-1", "C-2"])
+        mk("C-1", parent="C", depends_on=["C-2"])
+        mk("C-2", parent="C", depends_on=["C-1"])
+        rc, out = cli("check", "C-1")
+        expect("plans: a dependency cycle is refused by card.py check", rc == 1 and "cycle" in out)
+        mk("U-1", depends_on=["NOPE-9"])
+        rc, out = cli("check", "U-1")
+        expect("plans: an unknown dependency is refused, naming it", rc == 1 and "NOPE-9" in out)
+        mk("M", children=["M-1"])
+        mk("M-1")
+        mk("M-2", parent="M")
+        rc1, out1 = cli("check", "M")
+        rc2, out2 = cli("check", "M-2")
+        expect("plans: a parent/child mismatch is refused from either side",
+               rc1 == 1 and "M-1" in out1 and rc2 == 1 and "children" in out2)
+        mk("P", children=["P-1", "P-2"])
+        mk("P-1", parent="P")
+        mk("P-2", parent="P", depends_on=["P-1"])
+        mk("Q", children=["Q-1"])
+        mk("Q-1", parent="Q", depends_on=["P-1"])
+        rc, out = cli("check", "Q-1")
+        expect("plans: a dependency on another parent's card is refused", rc == 1 and "P-1" in out)
+        expect("plans: a well-formed parent and child pass card.py check",
+               cli("check", "P")[0] == 0 and cli("check", "P-2")[0] == 0)
+        expect("CONTROL: a card with no parent and no depends_on checks as before", cli("check", "T-2")[0] == 0)
+
+        p, r = go("P", "edit_ok")
+        expect("plans: running a parent card is refused and nothing is launched",
+               p.returncode == 1 and "children" in p.stdout and r is None and not (Path(td) / "proj-card-p").exists())
+        p, r1 = go("P-1", "edit_ok")
+        p, r = go("P-2", "edit_ok")
+        expect("plans: a child whose dependency is done but NOT merged is refused before launch, naming it",
+               r1 and r1["status"] == "done" and p.returncode == 1 and "P-1" in p.stdout
+               and "merged" in p.stdout and r is None and not (Path(td) / "proj-card-p-2").exists())
+        rc, out = cli("tree", "P")
+        expect("plans: card.py tree shows each child, its dependencies and its status",
+               rc == 0 and re.search(r"P-1\b.*\bdone\b", out) and re.search(r"P-2\b.*P-1.*\bwritten\b", out))
+        g("branch", "-f", "development", "feat/t-p-1")            # the CTO merges P-1 (a fast-forward)
+        p, r = go("P-2", "edit_ok")
+        wt_p2 = Path(td) / "proj-card-p-2"
+        expect("plans: once the dependency is merged the child runs, and its worktree has the dependency's change",
+               r and r["status"] == "done" and g("merge-base", "--is-ancestor", r1["head"], "HEAD", cwd=wt_p2).returncode == 0)
+        rc, out = cli("tree", "P")
+        expect("plans: card.py tree marks the merged child merged and the finished one done",
+               re.search(r"P-1\b.*\bmerged\b", out) and re.search(r"P-2\b.*\bdone\b", out))
+        rc, out = cli("new", "P-3", "--seat", "tester", "--parent", "P")
+        expect("plans: card.py new --parent links both cards and the board note names the parent",
+               rc == 0 and "P-3" in json.loads((proj / ".ai-teammates" / "cards" / "P.json").read_text())["children"]
+               and json.loads((proj / ".ai-teammates" / "cards" / "P-3.json").read_text())["parent"] == "P"
+               and "P" in board_of("P-3")["note"].split())
+
 
 def check_seat_limits():
     """What a seat may run, enforced by the hooks and not only by its allowlist.

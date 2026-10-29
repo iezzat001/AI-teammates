@@ -124,6 +124,10 @@ one card after you have split it twice. Always the review of what comes back.
    then fill in `.ai-teammates/cards/<ID>.json`. It also puts the card on the board.
 2. **`card.py check <ID>`.** If it says *split*, split it into two cards. Never
    raise a limit to get past it: a card that is too big is two tasks, not a harder one.
+   **A task that needs more than one card starts as a parent card**: the plan, never run.
+   Add each piece with `card.py new <ID>-1 --seat ... --parent <ID>`, and on a child that
+   needs another's merged work set `"depends_on": ["<ID>-1"]`. The runner refuses a child
+   whose dependencies have not landed. `card.py tree <ID>` shows the plan and how far it got.
    **Memory is yours to hand out.** A seat cannot search memory: it runs with no MCP
    servers and none of the user's plugins, so the only context it gets is what is on
    the card. If background facts would change how it does the task (a past decision,

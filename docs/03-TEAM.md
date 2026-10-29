@@ -97,6 +97,8 @@ The runner handles what has bitten us:
 
 - checks the **process table** for an existing run of that seat
 - refuses a card that is too big to be one task, **before** spending anything
+- refuses a parent card (the plan for a bigger task: `card.py tree <ID>`), and a child
+  card whose `depends_on` cards are not merged into the integration branch yet
 - gives each card its own worktree and branch off the integration branch, and
   archives (tags) an earlier unfinished attempt instead of reusing its leftovers
 - kills a run that passes its wall-time or tool-call budget, and its children

@@ -18,7 +18,12 @@ architecture, and cannot go looking: that is the point.
     card.py check <ID>        validate, and say how to split it if it is too big
     card.py show <ID>         the exact prompt the seat will receive
     card.py accept [ID]       run the card's acceptance commands here (the seat's self-check)
+    card.py tree <PARENT>     the plan: each child, what it waits for, and how far it got
     card.py ls
+
+A task bigger than one card is a PARENT card ("children": [...], never run on a seat) and
+child cards ("parent": "<ID>", "depends_on": [<sibling IDs whose merged work it needs>]).
+`card.py new <ID> --parent <PARENT>` links both sides.
 """
 import json
 import os
@@ -178,6 +183,65 @@ def acceptance_runs_scope(card: dict, cmd: str, depth: int = 0) -> str:
     return ""
 
 
+def is_parent(card: dict) -> bool:
+    return bool(card.get("children"))
+
+
+def plan_problems(card: dict) -> list:
+    """What is wrong with the links between this card and the others in its plan.
+
+    FOUND 2026-10-17: the owner asked for one large outcome, the CTO wrote BOUND-1 and BOUND-2 and
+    later queued BOUND-3, and their relationship lived only in board prose. A card is cut from the
+    integration branch when it starts, so one that needs another's work must not start before that
+    work has landed; the runner can refuse that only if the dependency is written down."""
+    cid, par, bad = card.get("id"), card.get("parent"), []
+
+    def other(x):
+        try:
+            return card if x == cid else load(x)
+        except Exception:
+            return None
+    for key in ("children", "depends_on"):
+        if not isinstance(card.get(key) or [], list):
+            return [f"{key} must be a list of card IDs"]
+    for k in card.get("children") or []:
+        c = other(k)
+        if c is None:
+            bad.append(f"child {k} is not a card")
+        elif c.get("parent") != cid:
+            bad.append(f"child {k} does not name {cid} as its parent")
+    if par:
+        p = other(par)
+        if p is None:
+            bad.append(f"parent {par} is not a card")
+        elif cid not in (p.get("children") or []):
+            bad.append(f"parent {par} does not list {cid} in its children")
+    for d in card.get("depends_on") or []:
+        c = other(d)
+        if c is None:
+            bad.append(f"depends_on {d}: there is no card {d}")
+        elif c.get("parent") != par:
+            bad.append(f"depends_on {d}: it belongs to {c.get('parent') or 'no parent'}, this card to "
+                       f"{par or 'no parent'}. A card depends only on its siblings")
+    seen = set()
+
+    def cycle(x, stack):
+        if x in stack:
+            return stack[stack.index(x):] + [x]
+        if x in seen:
+            return []
+        seen.add(x)
+        for d in (other(x) or {}).get("depends_on") or []:
+            found = cycle(d, stack + [x])
+            if found:
+                return found
+        return []
+    loop = cycle(cid, [])
+    if loop:
+        bad.append("depends_on cycle: " + " -> ".join(loop) + ". None of them could ever start")
+    return bad
+
+
 def validate(card: dict, expect_id: str = "") -> list:
     """Problems that make this card the wrong size or shape. [] = a seat can take it.
 
@@ -195,6 +259,10 @@ def validate(card: dict, expect_id: str = "") -> list:
     elif len(goal) > L["max_goal_chars"] or "\n" in goal:
         bad.append(f"goal is {len(goal)} chars (max {L['max_goal_chars']}, one line): "
                    "if it needs more words it is more than one task, so split the card")
+    if is_parent(card):
+        # the plan, never run on a seat: no seat, size or budget. Its scope.edit, if any, lists
+        # what the whole outcome touches; its acceptance proves the whole outcome.
+        return bad + holes(card) + plan_problems(card)
     if not card.get("seat"):
         bad.append("seat is missing")
     if (card.get("tier") or "standard") not in TIERS:
@@ -247,13 +315,15 @@ def validate(card: dict, expect_id: str = "") -> list:
     if b.get("tool_calls", 0) > L["max_tool_calls"]:
         bad.append(f"budget over {L['max_tool_calls']} tool calls: split the card")
 
-    # The blank template must not be runnable: <path/to/file> is a valid-looking path.
-    vals = [goal, *edits, *steps, *(card.get("out_of_scope") or []),
-            *[str((a or {}).get("run") or "") for a in acc]]
-    holes = [v for v in vals if isinstance(v, str) and v.strip().startswith("<") and v.strip().endswith(">")]
-    if holes:
-        bad.append(f"unfilled template placeholder: {holes[0][:50]}")
-    return bad
+    return bad + holes(card) + plan_problems(card)
+
+
+def holes(card: dict) -> list:
+    """The blank template must not be runnable: <path/to/file> is a valid-looking path."""
+    vals = [str(card.get("goal") or ""), *edit_scope(card), *(card.get("steps") or []),
+            *(card.get("out_of_scope") or []), *[str((a or {}).get("run") or "") for a in card.get("acceptance") or []]]
+    found = [v for v in vals if isinstance(v, str) and v.strip().startswith("<") and v.strip().endswith(">")]
+    return [f"unfilled template placeholder: {found[0][:50]}"] if found else []
 
 
 def render(card: dict) -> str:
@@ -379,13 +449,39 @@ def main(argv) -> int:
             return 1
         c = template(argv[1], opts.get("--seat", "ui-developer"), opts.get("--tier", "standard"),
                      opts.get("--title", ""), opts.get("--goal", ""))
+        par = opts.get("--parent")
+        if par:
+            try:
+                pc = load(par)
+            except Exception as e:
+                print(f"  {e}")
+                return 1
+            c["parent"], c["depends_on"] = par, []
+            pc["children"] = [*(pc.get("children") or []), argv[1]]
+            save(pc)
         print(f"  wrote {save(c)}\n  fill it in, then: card.py check {argv[1]}")
         try:
             import board
-            if board.ensure(argv[1], c["seat"], c["title"] or c["goal"] or argv[1]):
+            if board.ensure(argv[1], c["seat"], c["title"] or c["goal"] or argv[1], f"part of {par}" if par else ""):
                 print(f"  added {argv[1]} to the board")
         except Exception:
             pass
+        return 0
+    if cmd == "tree" and len(argv) >= 2:
+        import cardrun
+        try:
+            p = load(argv[1])
+        except Exception as e:
+            print(f"  {e}")
+            return 1
+        print(f"  {p['id']}: {p.get('goal', '')[:80]}")
+        for k in p.get("children") or []:
+            try:
+                deps = ", ".join(load(k).get("depends_on") or []) or "-"
+            except Exception:
+                print(f"    {k:<12} (no card)")
+                continue
+            print(f"    {k:<12} after {deps:<24} {cardrun.plan_status(k)}")
         return 0
     if cmd in ("check", "show") and len(argv) >= 2:
         try:

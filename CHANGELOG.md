@@ -13,6 +13,11 @@ All notable changes to this project are documented here. The format follows
   data, and its default folder exposed `config.json`.
 - `scripts/dashboard_demo.py`: the dashboard for an invented project, and the README screenshots.
 - The README explains how a task flows, and how a teammate differs from a Claude Code subagent.
+- Parent cards and dependencies: a parent card (`children`) holds the plan for a task bigger than
+  one card; a child names its `parent` and the siblings it `depends_on`. `card.py check` refuses
+  cycles, unknown dependencies and mismatched links; the runner refuses a parent, and a child whose
+  dependencies are not merged into the integration branch. `card.py tree <ID>` shows the plan;
+  `card.py new --parent` links both sides (#1).
 
 ### Security
 

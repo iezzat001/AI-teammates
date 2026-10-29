@@ -126,6 +126,22 @@ def last_run(cid: str):
     return last
 
 
+def merged(cid: str) -> bool:
+    """A card has landed when its last run is done and that commit is in the integration branch."""
+    r = last_run(cid)
+    return bool(r and r.get("status") == "done" and r.get("head")
+                and git("merge-base", "--is-ancestor", r["head"], BASE).returncode == 0)
+
+
+def plan_status(cid: str) -> str:
+    """written | running | merged | the last run's status. Running is read from the process table."""
+    ps = subprocess.run(["ps", "-eo", "command"], capture_output=True, text=True).stdout
+    if re.search(rf"seat\.py run\b.*--card {re.escape(cid)}(\s|$)", ps, re.M):
+        return "running"
+    r = last_run(cid)
+    return "written" if not r else "merged" if merged(cid) else r.get("status") or "?"
+
+
 def archive(wt: Path, branch: str, scope=None) -> str:
     """Tag, then delete. A tag costs nothing and makes the deletion reversible.
 
@@ -269,6 +285,16 @@ def run(agents: dict, cid: str, seat_name: str = "") -> int:
         print(f"  card {cid} is not ready to run ({len(problems)} problem(s)). Nothing was launched:")
         for p in problems:
             print(f"    - {p}")
+        return 1
+    if cardmod.is_parent(card):
+        print(f"  card {cid} is a parent card: the plan, never run on a seat. Nothing was launched.\n"
+              f"  Run its children: {', '.join(card['children'])}  (card.py tree {cid})")
+        return 1
+    # A card's worktree is cut from BASE, so it sees a dependency's work only once that has merged
+    waiting = [d for d in card.get("depends_on") or [] if not merged(d)]
+    if waiting:
+        print(f"  card {cid} depends on {', '.join(waiting)}, not merged into {BASE} yet. Nothing was launched.\n"
+              f"  Its worktree would not contain that work: land {waiting[0]} first.")
         return 1
     name = seat_name or card["seat"]
     spec = agents.get(name)

@@ -80,7 +80,7 @@ def set_state(tid, state, note=None):
     return ""
 
 
-def ensure(tid, agent, title):
+def ensure(tid, agent, title, note=""):
     """Put the card on the board if it is not there yet (first free column of todo/backlog)."""
     if not BOARD.exists():
         return False
@@ -90,7 +90,7 @@ def ensure(tid, agent, title):
     ids = [c["id"] for c in columns(d)]
     status = next((s for s in STATES["todo"] if s in ids), ids[0] if ids else "todo")
     d["tasks"].append({"id": tid, "title": title, "agent": agent, "status": status,
-                       "updated": date.today().isoformat(), "note": ""})
+                       "updated": date.today().isoformat(), "note": note})
     save(d)
     return True
 
