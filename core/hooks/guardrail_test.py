@@ -2232,6 +2232,36 @@ def check_dashboard():
                if not u.startswith("http://www.w3.org/")]          # the SVG namespace name is not a request
         expect("the shipped page requests nothing from another host" + (f" (found: {ext[0][:60]})" if ext else ""), not ext)
 
+    # FOUND 2026-10-29: after the upgrade the owner's bookmark, http://localhost:8899/dashboard.html (the
+    # project's own page until then), answered 404: the shipped page is index.html at /. An old address
+    # leads to the page; a project that still serves its own dashboard.html gets it.
+    import http.client
+    import tempfile
+    import threading
+    from functools import partial
+    from http.server import ThreadingHTTPServer
+
+    def get(directory, path):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), partial(ds.Handler, directory=str(directory)))
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+            c.request("GET", path)
+            r = c.getresponse()
+            return r.status, r.getheader("Location") or ""
+        finally:
+            srv.shutdown()
+            srv.server_close()
+    with tempfile.TemporaryDirectory() as td:
+        (Path(td) / "index.html").write_text("new")
+        got = get(td, "/dashboard.html")
+        expect(f"the old address /dashboard.html leads to the page at / (got {got})",
+               got[0] in (301, 302, 307, 308) and got[1] == "/")
+        expect("...and keeps its query (/dashboard.html?x=1 -> /?x=1)", get(td, "/dashboard.html?x=1")[1] == "/?x=1")
+        (Path(td) / "dashboard.html").write_text("own")
+        expect("CONTROL: a project that serves its own dashboard.html still gets it",
+               get(td, "/dashboard.html") == (200, ""))
+
 
 def check_session_end():
     """Does the session-end auto-commit take ONLY the record?

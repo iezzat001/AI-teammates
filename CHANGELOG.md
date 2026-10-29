@@ -95,6 +95,8 @@ without its fix:
 
 ### Fixed
 
+- After an upgrade, a bookmark to the old `/dashboard.html` answered 404. The dashboard server now
+  sends it to the page at `/`, unless the folder it serves still has a `dashboard.html` of its own.
 - `memlife.py fact set` with an unchanged statement renews its date, so `audit`'s 90-day
   re-confirm can be cleared.
 - A memory slice could exceed what `card.py check` accepts (3216 of 3200 characters).
