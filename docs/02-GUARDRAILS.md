@@ -124,6 +124,23 @@ product's auth layer (three refusals per run, no verdict). And because a seat co
 delete a file, the CTO did a deletion card itself. Both fixed; the test now uses the pilot project's
 real deny list and checks that reading about a denied tool still works.
 
+### 10. A project's agents do not change AI-teammates itself
+
+The CTO and its seats may read the framework's source and run its scripts. They may not edit it,
+write into it, run a git write in it (branch, commit, worktree, push) or a `gh` action from it (a
+pull request, an issue): `guard.py` blocks it (`framework-source`). A source checkout is known by its
+files (`install.sh`, `bin/cto`, `core/hooks/guard.py`), so this covers the dev repository, the stable
+copy `cto` runs from and any clone. A session working in the framework repository itself is not
+affected. A framework bug is reported to the owner; it is fixed and reviewed in its own repository.
+
+**Incident (2026-10-29):** the pilot project's CTO was asked to fix a failing pre-flight check. The
+check was the framework's, so it fixed the framework's test in its project copy, then read the
+AI-teammates repository's own `AGENTS.md` and set out to branch it and open a pull request there.
+
+Known limits: a script or interpreter run inside the framework checkout is not read (running the
+framework is allowed), and nor is a `gh` action that names the repository with `--repo` from
+elsewhere; it would need a branch pushed from the checkout, which is blocked.
+
 ---
 
 ## What runs, and when
@@ -132,7 +149,7 @@ real deny list and checks that reading about a denied tool still works.
 |---|---|---|
 | `guardrail_test.py` | Every CTO session start | Seats are bound by permissions; `prepush` blocks a real commit — by **executing** it |
 | `prepush.py` | Every push (git pre-push hook) | No unreviewed product code on a protected branch; production only via integration |
-| `guard.py` | Claude Code `PreToolUse` | Product files are not edited in a checkout on a protected branch, judged by the checkout the file is in; changing a guardrail (the hooks, `.claude/settings*.json`, `config.json`) asks the owner, by edit or by shell; a card seat edits only its card's files and writes nothing through the shell; no seat runs `required_denies`; the CTO's own product-code edits follow `config.json` `delegation` (allow, ask or block) |
+| `guard.py` | Claude Code `PreToolUse` | Product files are not edited in a checkout on a protected branch, judged by the checkout the file is in; changing a guardrail (the hooks, `.claude/settings*.json`, `config.json`) asks the owner, by edit or by shell; a card seat edits only its card's files and writes nothing through the shell; no seat runs `required_denies`; the CTO's own product-code edits follow `config.json` `delegation` (allow, ask or block); nothing changes the AI-teammates source itself |
 | `seat_status.py` | Before launching a seat | Nothing is already running — from the **process table** |
 | `check_build_env.py` | Before every deploy | Config is actually baked into the **built bundle** |
 
