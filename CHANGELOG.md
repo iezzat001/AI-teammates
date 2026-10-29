@@ -99,6 +99,11 @@ without its fix:
   every upgrade. It keeps each file's line ending now; `scripts/test.sh` checks a re-install changes nothing.
 - The test suite reports a crashing check as one failure and runs the rest, and
   `scripts/test.sh` reuses MemPalace's embedding model instead of downloading it every run.
+- `cto setup --answers` skipped a seat it did not find, without a word: `"backend": {"keep": false}`
+  in a project whose backend seat is named otherwise dropped nothing. It now refuses, changes
+  nothing, and lists the seats there are by name (a seat is chosen by the `name:` in its spec).
+- The setup check copied the installation's own seats, so it failed a correct `setup.py` in any
+  project that had renamed or dropped its backend seat. It brings its own seats now.
 
 ## [0.1.0] - 2026-10-28
 

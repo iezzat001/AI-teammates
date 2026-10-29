@@ -121,7 +121,8 @@ The runner handles what has bitten us:
 
 `cto setup` keeps or drops each seat (a dropped one moves to `.ai-teammates/agents/off/` and an
 upgrade leaves it there), sets each seat's harness and model in its spec, and the model per card
-tier (`seat_models`). Cards run only on Claude Code seats.
+tier (`seat_models`). Cards run only on Claude Code seats. In an answers file a seat is named by
+the `name:` in its spec, not its file name; a name that is not a seat refuses and changes nothing.
 
 ## Adding a teammate
 

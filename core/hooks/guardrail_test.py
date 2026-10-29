@@ -1258,7 +1258,17 @@ def check_setup():
         ai = proj / ".ai-teammates"
         ai.mkdir(parents=True)
         shutil.copytree(here, ai / "hooks", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        shutil.copytree(REPO / ".ai-teammates" / "agents", ai / "agents")
+        # The test's own seats, not this installation's: a project renames its seats (and drops them with
+        # this very command), and copying the real ones failed a correct setup.py in a project whose
+        # backend.md is `name: backend-<db>` (FOUND 2026-10-29 by the pilot project's CTO at pre-flight).
+        # backend.md keeps that shape, so "a seat is chosen by its name, not its file" stays tested.
+        (ai / "agents").mkdir()
+        for stem, meta in (("cto", "name: cto\norchestrator: true\n"),
+                           ("backend", "name: backend-db\nmodel: claude-sonnet-5-5\n"),
+                           ("ui-developer", "name: ui-developer\nmodel: claude-sonnet-5-5\n"),
+                           ("security-audit", "name: security-audit\nmodel: claude-sonnet-5-5\n"
+                                              "launch: claude --model claude-sonnet-5-5 --tools Read,Glob,Grep\n")):
+            (ai / "agents" / f"{stem}.md").write_text(f"---\n{meta}harness: claude-code\n---\n# {stem}\n")
         base_cfg = {"project": "proj", "protected_branches": ["main", "development"], "guarded_paths": ["src/"],
                     "cards": {"max_edit_files": 4}, "memory": {"retired": ["old-term"]}}
         (ai / "config.json").write_text(json.dumps(base_cfg))
@@ -1287,9 +1297,21 @@ def check_setup():
                    "npx claude-mem install" in p.stdout)
 
         answers = Path(td) / "answers.json"
+        # FOUND 2026-10-29: an answer for a seat that is not there (this file's own docstring example,
+        # `backend`, where the seat is named backend-db) was skipped without a word: the owner believed a
+        # seat dropped that still ran. A seat is chosen by its name; an unknown one refuses, changing nothing.
+        before = (ai / "config.json").read_text()
+        answers.write_text(json.dumps({"cto_model": "m-cto", "seats": {"backend": {"keep": False}}}))
+        p = setup("--answers", str(answers))
+        expect("an answer for a seat that is not there is refused, naming the seats there are",
+               p.returncode == 1 and "backend" in p.stdout and "backend-db" in p.stdout
+               and "ui-developer" in p.stdout and "cto," not in p.stdout)
+        expect("...and nothing is changed (config.json, every seat spec)",
+               (ai / "config.json").read_text() == before and spec("backend") and not (ai / "agents" / "off").exists())
+
         answers.write_text(json.dumps({
             "memory": "claude-mem", "cto_model": "m-cto",
-            "seats": {"backend": {"keep": False}, "ui-developer": {"model": "m-ui"}, "security-audit": {"model": "m-audit"}},
+            "seats": {"backend-db": {"keep": False}, "ui-developer": {"model": "m-ui"}, "security-audit": {"model": "m-audit"}},
             "seat_models": {"hard": "m-hard"}, "guarded_paths": ["src/", "api/"], "delegation": "ask",
             "integration_checks": ["npm test"]}))
         p = setup("--answers", str(answers))
