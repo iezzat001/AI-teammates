@@ -148,7 +148,7 @@ elsewhere; it would need a branch pushed from the checkout, which is blocked.
 | Check | When | What it proves |
 |---|---|---|
 | `guardrail_test.py` | Every CTO session start | Seats are bound by permissions; `prepush` blocks a real commit — by **executing** it |
-| `prepush.py` | Every push (git pre-push hook) | No unreviewed product code on a protected branch; production only via integration |
+| `prepush.py` | Every push (git pre-push hook) | No unreviewed product code on a protected branch; production only via integration; a push onto production carrying commits that decide access or spend needs a filed independent review (`review.py`), however the push is spelled, and is blocked if the check cannot run |
 | `guard.py` | Claude Code `PreToolUse` | Product files are not edited in a checkout on a protected branch, judged by the checkout the file is in; changing a guardrail (the hooks, `.claude/settings*.json`, `config.json`) asks the owner, by edit or by shell; a card seat edits only its card's files and writes nothing through the shell; no seat runs `required_denies`; the CTO's own product-code edits follow `config.json` `delegation` (allow, ask or block); nothing changes the AI-teammates source itself |
 | `seat_status.py` | Before launching a seat | Nothing is already running — from the **process table** |
 | `check_build_env.py` | Before every deploy | Config is actually baked into the **built bundle** |

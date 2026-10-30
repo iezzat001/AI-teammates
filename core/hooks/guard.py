@@ -912,6 +912,9 @@ def check_git(tool, ti):
                 # happen. The CTO wrote auth in front of a money-spending proxy,
                 # reviewed its own work, merged and deployed - the read-only audit
                 # seat existed and was never launched.
+                # This judges a SPELLING. prepush.py runs the same check on every push
+                # that lands on production, so `git push origin development:main` is
+                # caught there (2026-09-30).
                 rv = REPO / ".ai-teammates" / "hooks" / "review.py"
                 if rv.exists():
                     r = subprocess.run([sys.executable, str(rv)], cwd=str(eff_repo),

@@ -23,10 +23,14 @@ so every worktree shares one copy.
 Also fixed: with no upstream this scanned the whole history, so the first push
 of a new branch (e.g. development) was blocked by years-old commits on main.
 "New" now means: not already on any remote.
+
+A push that lands on production also has to clear the independent-review gate
+(review.py) - see review_gate().
 """
 import os
 import subprocess
 import sys
+import textwrap
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -49,20 +53,65 @@ def new_commits(local, remote, *exclude):
     return [local, *("^" + x for x in exclude), "--not", "--remotes"]
 
 
+def review_gate(local, remote):
+    """Independent review for a push onto production: the check guard.py runs on a
+    typed `git merge development`, at the door guard.py cannot see.
+
+    FOUND 2026-09-30: guard.py gates a SPELLING - `git merge <integration>` on the
+    production checkout. `git push origin development:main` promotes the same
+    commits and never met it. Measured: an unreviewed src/auth.ts merged into
+    development went to main, exit 0. This hook is told where a ref lands
+    whatever the spelling, so the same check runs here, over exactly the commits
+    being pushed.
+
+    FAIL CLOSED: if the check cannot run - review.py missing, a remote tip we do
+    not have, git unreadable - the push is blocked and says so. A gate that
+    raises and lets the push through is off exactly when something is wrong.
+
+    A first push of production to a remote that has none (remote sha all zeros)
+    is judged like any other: over the commits not on another remote, which is
+    all of history when nothing else is remote. Deliberate (2026-09-30). Skipping
+    it would be a way round the gate for whoever can make the ref look absent,
+    and the product-code rule above already treats those same commits as new. A
+    project that ran under the guardrails passes on its filed reviews; one
+    written before them cannot be reviewed retroactively and announces the push
+    once, which is what an override is for."""
+    first = not remote or remote == ZERO
+    label = local[:12] if first else f"{remote[:12]}..{local[:12]}"
+    try:
+        import review
+        pending = review.unreviewed(new_commits(local, remote))
+        if not pending:
+            return []
+        text = review.report(pending, label)
+    except Exception as e:
+        return [f"independent-review gate COULD NOT RUN ({type(e).__name__}: {str(e)[:140]}) - "
+                f"blocked, not waved through: a promotion nobody could check is not a reviewed one"]
+    if first:
+        text += ("\n\nNo production branch on this remote yet, so every commit not already on another "
+                 "remote counts as new.\nAn initial push is announced, not reviewed: "
+                 "AI_TEAMMATES_ALLOW='<why>'.")
+    return [text]
+
+
 def violations(local, remote, dest):
     """Why pushing `local` onto branch `dest` is not allowed. [] = allowed."""
     if dest not in _config.protected():
         return []
+    production, integration = _config.branches()
+    # First: the override log keeps only the first problems, and this is the one
+    # that must not fall off the end of it.
+    out = review_gate(local, remote) if dest == production and integration else []
+
     # Only commits typed on this branch's own line count: files that arrived by
     # merging a reviewed branch are what development exists to accumulate.
     direct = sh("log", "--first-parent", "--no-merges", "--name-only",
                 "--pretty=format:", *new_commits(local, remote)).splitlines()
     guarded = sorted({f for f in direct if f and f.startswith(_config.guarded())})
-    out = [f"product file committed directly to {dest}: {f}" for f in guarded[:8]]
+    out += [f"product file committed directly to {dest}: {f}" for f in guarded[:8]]
 
     # DIRECTION, not file type: production advances only by what the
     # integration branch already has. A property of FILES cannot enforce this.
-    production, integration = _config.branches()
     if dest == production and integration and sh("rev-parse", "--verify", "--quiet", integration):
         skipped = sh("log", "--no-merges", "--format=%h %s",
                      *new_commits(local, remote, integration)).splitlines()
@@ -75,7 +124,7 @@ def decide(problems):
         return 0
     print("\n  BLOCKED — this push would put unreviewed work on a protected branch:")
     for p in problems:
-        print(f"    {p}")
+        print(textwrap.indent(p, "    "))          # a problem may be a paragraph (the review report)
     reason = os.environ.get("AI_TEAMMATES_ALLOW") or ("--force-allow" if "--force-allow" in sys.argv else "")
     if reason:
         try:
