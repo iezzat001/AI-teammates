@@ -311,6 +311,31 @@ def check_prepush():
             bad(f"review: a doc quoting Bearer flagged an unrelated commit (exit {r.returncode})")
         sh("checkout", "-q", "development")
 
+        # FOUND 2026-09-30: the independent-review gate ran only on a TYPED `git merge development` on
+        # the production checkout (guard.py). `git push origin development:main` promotes the same
+        # commits and never met it: an unreviewed Authorization header went to main, exit 0. The
+        # pre-push hook is told where a ref lands, so the gate runs there too, on real pushes.
+        sh("merge", "-q", "--no-ff", "-m", "merge feat/doc", "feat/doc")
+        sh("push", "-q", "origin", "development")
+        expect("development:main with nothing security-touching ALLOWED (CONTROL)", True, "development:main")
+        sh("merge", "-q", "--no-ff", "-m", "merge feat/api", "feat/api")
+        expect("development itself, carrying an unreviewed auth change, ALLOWED (CONTROL: not production)",
+               True, "development")
+        r = sh("push", "-q", "origin", "development:main")
+        if r.returncode != 0 and "UNREVIEWED SECURITY" in r.stderr + r.stdout and "A: add Authorization" in r.stderr + r.stdout:
+            ok("prepush: development:main with an unreviewed auth change BLOCKED, naming the commit (a real push, executed)")
+        else:
+            bad(f"prepush: an unreviewed auth change reached main by `git push origin development:main` "
+                f"(exit {r.returncode})")
+        expect("...and `git push origin HEAD:main` from development BLOCKED too", False, "HEAD:main")
+        # a filed review (as review.py --record writes it after a read-only audit run) clears it
+        reviews = Path(td) / ".git" / "ai-teammates" / "reviews.jsonl"
+        reviews.parent.mkdir(parents=True, exist_ok=True)
+        covered = sh("log", "--format=%H", "origin/main..development").stdout.split()
+        reviews.write_text(json.dumps({"reviewer": "security-audit", "range": "main..development",
+                                       "commits": covered}) + "\n")
+        expect("development:main once a review covers those commits ALLOWED", True, "development:main")
+
 
 def check_hook():
     print("\n  PRE-PUSH HOOK — is git itself enforcing it for this repo?")

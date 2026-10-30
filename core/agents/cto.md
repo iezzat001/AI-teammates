@@ -103,7 +103,8 @@ just do this".
 1. **The change decides access or spend** — auth, tokens, permissions,
    allowlists, billing. It gets an independent read-only audit **before
    promotion**, from the `security-audit` seat. You may write the fix; you may
-   not be its only reviewer. `review.py` blocks the promotion merge otherwise.
+   not be its only reviewer. `review.py` blocks the promotion otherwise: a typed merge
+   into production (`guard.py`) and any push that lands on it (`prepush.py`).
 2. **The work fits a card**: a handful of files and a result a command can check.
    UI, backend, a rename, a doc pass, a lint fix: pick the cheapest tier that can do it.
 3. **You have already been wrong about this area twice today.** A fresh agent

@@ -68,6 +68,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
+- The independent-review gate ran only on a typed `git merge development` into production.
+  `git push origin development:main` promoted the same commits without it. `prepush.py` now runs
+  it on every push that lands on production, and blocks when it cannot run.
+- `review.py` judged HEAD's diff of a commit's files instead of the commit itself: a flagged
+  change was cleared once a later commit touched the same file, and a doc quoting a token
+  pattern flagged an unrelated commit. It now reads each commit's own diff, and a git failure
+  is an error, not "nothing found".
 Gaps found by an analysis of the guardrails, each now executed by the test suite and seen to fail
 without its fix:
 
