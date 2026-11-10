@@ -24,8 +24,8 @@ branch_prefix: feat/ui-
 ---
 ```
 
-- **harness** — the runtime. Cards run on `claude-code`, because that is where the
-  hooks that enforce scope, loops and budget fire.
+- **harness** — the runtime, always `claude-code`: that is where the hooks that
+  enforce scope, loops and budget fire. Any other value is refused.
 - **model** — the default brain; a card's `tier` picks the model per card (see
   [04-ROUTING](04-ROUTING.md)).
 - **writes / read_only** — a seat that changes files must say so; the safety test
@@ -80,8 +80,8 @@ own plugins and MCP servers, so memory reaches it only as the slice on the card.
 `guardrail_test.py` asserts this against the argv that would actually launch, and
 executes the scope guard, rather than trusting the docs.
 
-(OpenCode seats are bound by `opencode.json` instead. Cards no longer run there; see
-the History note in [04-ROUTING](04-ROUTING.md).)
+A seat on any other harness is refused: by `seat.py run`, by `cto setup`, and by the
+STATIC check at pre-flight. Why: the History note in [04-ROUTING](04-ROUTING.md).
 
 ---
 
@@ -120,8 +120,8 @@ The runner handles what has bitten us:
 ## Choosing the team
 
 `cto setup` keeps or drops each seat (a dropped one moves to `.ai-teammates/agents/off/` and an
-upgrade leaves it there), sets each seat's harness and model in its spec, and the model per card
-tier (`seat_models`). Cards run only on Claude Code seats. In an answers file a seat is named by
+upgrade leaves it there), sets each seat's model in its spec, and the model per card
+tier (`seat_models`). Every seat runs on Claude Code. In an answers file a seat is named by
 the `name:` in its spec, not its file name; a name that is not a seat refuses and changes nothing.
 
 ## Adding a teammate
@@ -129,7 +129,7 @@ the `name:` in its spec, not its file name; a name that is not a seat refuses an
 Only when a real task does not fit an existing role. Then:
 
 1. **Name the task type**, not the technology. "Data migration", not "Postgres".
-2. **Pick the harness first.** Hooks needed → Claude Code. Writes product code →
+2. **Say what it may do.** The harness is always `claude-code`. Writes product code →
    `writes: true`. Read-only → `read_only: true` (plan mode).
 3. **Pick the model from measurement.** Run the candidate on one real card from
    your repo and compare. Leaderboards do not know your codebase.

@@ -15,7 +15,7 @@ Answers file (every key optional):
     {"memory": "both" | "claude-mem" | "mempalace" | "none",
      "mempalace_wing": "<wing>", "claude_mem_projects": ["<name>", ...],
      "cto_model": "<model id or default>",
-     "seats": {"backend": {"keep": false}, "ui-developer": {"model": "<id>", "harness": "claude-code"}},
+     "seats": {"backend": {"keep": false}, "ui-developer": {"model": "<id>"}},
          (a seat by the `name:` in its spec, not its file name; an unknown one refuses, changing nothing)
      "seat_models": {"mechanical": "<id>", "standard": "<id>", "hard": "<id>"},
      "production_branch": "main", "integration_branch": "development",
@@ -41,7 +41,7 @@ AI = HERE.parent                       # .ai-teammates
 CONFIG = AI / "config.json"
 AGENTS = AI / "agents"
 MEMORIES = ("both", "claude-mem", "mempalace", "none")
-HARNESSES = ("claude-code", "opencode", "codex")
+HARNESS = "claude-code"     # the only one: hooks, which stop a seat during a run, fire nowhere else
 
 
 class Asker:
@@ -166,13 +166,7 @@ def step_team(ask, cfg: dict) -> tuple:
             path.rename(AGENTS / "off" / path.name)      # install.sh does not bring it back
             dropped.append(name)
             continue
-        harness = ask(f"seats.{name}.harness", f"  {name}: harness", spec.get("harness") or "claude-code", HARNESSES)
         model = ask(f"seats.{name}.model", f"  {name}: model", spec.get("model") or "")
-        if harness != spec.get("harness"):
-            frontmatter_set(path, "harness", harness)
-            if harness != "claude-code":
-                print(f"    note: cards run only on Claude Code seats; {name} now runs free-form tasks only, "
-                      f"and its spec needs a launch/headless command for {harness} (docs/04-ROUTING.md)")
         if model and model != spec.get("model"):
             frontmatter_set(path, "model", model)
         models.add(model)
@@ -206,6 +200,21 @@ def unknown_seats(answers: dict) -> str:
     hints = "".join(f"\n    {w}.md is the seat named {files[w]}" for w in wrong if w in files)
     return (f"  setup: no seat named {', '.join(wrong)}; nothing was changed. The seats here: {', '.join(named)}"
             f" (a seat is chosen by the `name:` in its spec){hints}")
+
+
+def unsupported_harness(answers: dict) -> str:
+    """Why the answers ask for a harness that is not Claude Code, or "" when they do not.
+
+    Until 2026-11 setup offered opencode and codex here and wrote the choice into the seat's spec,
+    months after cards stopped running anywhere but Claude Code: the seat then ran nothing. Refused
+    before anything is written, like a seat that is not there."""
+    seats = answers.get("seats") or {}
+    wrong = sorted(f"{n}: {v.get('harness')}" for n, v in seats.items()
+                   if isinstance(v, dict) and v.get("harness") not in (None, HARNESS)) if isinstance(seats, dict) else []
+    if not wrong:
+        return ""
+    return (f"  setup: seats run on {HARNESS} only ({', '.join(wrong)}); nothing was changed. Its hooks are what "
+            f"stop a seat during a run (docs/04-ROUTING.md). Take \"harness\" out of the answers.")
 
 
 def verify_models(models: list) -> list:
@@ -261,10 +270,10 @@ def main(argv) -> int:
         except (IndexError, OSError, ValueError) as e:
             print(f"  setup: cannot read the answers file ({type(e).__name__}: {e})")
             return 1
-    unknown = unknown_seats(answers)
-    if unknown:
-        print(unknown)
-        return 1
+    for problem in (unknown_seats(answers), unsupported_harness(answers)):
+        if problem:
+            print(problem)
+            return 1
     ask = Asker(answers, ("--ask" in argv or sys.stdin.isatty()) and "--yes" not in argv)
     cfg = json.loads(CONFIG.read_text(encoding="utf-8")) if CONFIG.exists() else {}
     before = json.dumps(cfg, sort_keys=True)

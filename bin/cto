@@ -46,11 +46,11 @@ if [ -n "${INT_BR:-}" ] && [ "$(git rev-parse --abbrev-ref HEAD)" = "${PROD_BR:-
 fi
 
 # Apple's git first. /usr/local/bin/git has been a 2021 build (2.19) that lacks
-# --sparse; OpenCode snapshots with `git add --sparse` before every edit, and it
-# failed 247 times inside a harness before anyone noticed. Cheap insurance.
+# --sparse and misbehaves with worktrees; it failed 247 times inside a harness
+# before anyone noticed. Cheap insurance.
 export PATH="/usr/bin:$PATH"
 
-# One python call, three values. The earlier form put `|| echo` between the
+# One python call, several values. The earlier form put `|| echo` between the
 # heredoc marker and its body, which silently made the heredoc part of the
 # fallback string — `cto --doctor` printed python source where the model name
 # should have been. Caught on the first run of a fresh install.
@@ -58,15 +58,15 @@ export PATH="/usr/bin:$PATH"
 # cto.effort (low|medium|high|xhigh|max) is passed as `claude --effort`; "default" or unset = the CLI's own.
 # cto.mcp: "none" (default) = no MCP servers; "inherit" = every server in your user config and plugins;
 # or a path to an MCP config file = only those servers.
-read -r MODEL PROVIDER CTX EFFORT CTO_MCP <<< "$(python3 -c '
+read -r MODEL PROVIDER EFFORT CTO_MCP <<< "$(python3 -c '
 import json,sys
 try:
     c = json.load(open(sys.argv[1])).get("cto", {})
 except Exception:
     c = {}
-print(c.get("model") or "default", c.get("provider") or "anthropic", c.get("context_window") or 1048576,
+print(c.get("model") or "default", c.get("provider") or "anthropic",
       c.get("effort") or "default", c.get("mcp") or "none")
-' "$CFG/config.json" 2>/dev/null || echo "default anthropic 1048576 default none")"
+' "$CFG/config.json" 2>/dev/null || echo "default anthropic default none")"
 CTO_MCP="${CTO_MCP:-none}"
 # cto.tools: the built-in tools the CTO is offered ("default" = all of them). MEASURED 2026-10-06:
 # the CTO used 7 tools in ~400 calls over six sessions (plus TaskStop once), and was offered 24,
@@ -92,14 +92,18 @@ except Exception:
     ex = []
 print(json.dumps({"claudeMdExcludes": [os.path.expanduser(x) for x in ex]}) if ex else "")
 ' "$CFG/config.json" 2>/dev/null)"
-MODEL="${MODEL:-default}"; PROVIDER="${PROVIDER:-anthropic}"; CTX="${CTX:-1048576}"; EFFORT="${EFFORT:-default}"
+MODEL="${MODEL:-default}"; PROVIDER="${PROVIDER:-anthropic}"; EFFORT="${EFFORT:-default}"
 case "$EFFORT" in low|medium|high|xhigh|max|default) ;; *) echo "  cto: config.json cto.effort '$EFFORT' is not low|medium|high|xhigh|max - using the default"; EFFORT=default ;; esac
 
-# `ollama launch` routes Claude Code at an Ollama model, but ANTHROPIC_API_KEY
-# takes precedence if set — the session would quietly run on Anthropic instead:
-# wrong model, real money, and it reports success either way. Only on that
-# path: with provider=anthropic (install's own fallback) the key IS the auth.
-[ "$PROVIDER" = "anthropic" ] || unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN 2>/dev/null || true
+# The CTO runs on Claude Code, signed in to Anthropic: that is where the hooks fire. Until
+# 2026-11 a config with another provider was launched through `ollama launch`, a path that
+# stopped answering on 2026-09-24 (docs/04-ROUTING.md, History). Say so; launch nothing else.
+if [ "$PROVIDER" != "anthropic" ]; then
+  echo "  cto: config.json cto.provider is '$PROVIDER'. The CTO runs on Claude Code only." >&2
+  echo "       Remove \"provider\" from .ai-teammates/config.json and set cto.model to a Claude model" >&2
+  echo "       (or \"default\"), then run: cto setup" >&2
+  exit 1
+fi
 
 # `cto` is a live link to the AI-teammates repo; the hooks are the copy the
 # project installed. When they drift, cto can call hooks that are not there
@@ -123,15 +127,13 @@ sys.exit(0 if m["ok"] else 1)' "$HOOKS" 2>/dev/null || return 1
 # --- doctor ----------------------------------------------------------------
 if [ "${1:-}" = "--doctor" ]; then
   echo "── environment ─────────────────────────────────────────"
-  tools="claude git python3 node bun uv"; [ "$PROVIDER" = ollama ] && tools="$tools ollama"
-  for c in $tools; do
+  for c in claude git python3 node bun uv; do
     v="$(command -v "$c" >/dev/null 2>&1 && ($c --version 2>/dev/null | head -1) || echo '— missing')"
     printf "  %-9s %s\n" "$c" "$v"
   done
   echo
   echo "  git in use : $(command -v git) $(git --version | awk '{print $3}')"
-  [ "$PROVIDER" = ollama ] && echo "  models     : $(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}' | tr '\n' ' ')"
-  echo "  cto model  : $MODEL ($PROVIDER), effort $EFFORT, mcp $CTO_MCP"
+  echo "  cto model  : $MODEL, effort $EFFORT, mcp $CTO_MCP"
   echo "  cto tools  : $CTO_TOOLS${CTO_SETTINGS:+ (CLAUDE.md excluded: $CTO_SETTINGS)}"
   echo "  claude     : $(claude auth status 2>/dev/null | grep -q '"loggedIn": true' && echo 'signed in' || echo 'NOT signed in — claude auth login')"
   echo "  claude-mem : $(mem_status)"
@@ -200,7 +202,7 @@ print(f"({passed} checks passed and are not listed; the full output is in {sys.a
 
 # Signed out, Claude Code cannot start this session at all - and claude-mem's
 # observer uses the same sign-in, so memory stops with it. Stop here.
-if [ "$PROVIDER" = "anthropic" ] && ! claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then
+if ! claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then
   echo; echo "  STOP  Claude Code is not signed in. Run:  claude auth login"; exit 1
 fi
 
@@ -261,10 +263,10 @@ echo
 #                      guard.py's command checks. Only our own hook scripts.
 #   ssh / scp          production deploys need the human's word: interactive
 #                      sessions ask you, headless (`cto "task"`) cannot deploy.
-# Added: the checks the review protocol prescribes (process table, model list,
-# checksums), which were previously refused in headless mode.
+# Added: the checks the review protocol prescribes (process table, checksums),
+# which were previously refused in headless mode.
 ALLOW="Bash(git:*),Bash(curl:*),Bash(npm:*),Bash(rg:*),Bash(ls:*),Bash(cat:*),\
-Bash(pgrep:*),Bash(ps:*),Bash(ollama list:*),Bash(md5:*),Bash(shasum:*),\
+Bash(pgrep:*),Bash(ps:*),Bash(md5:*),Bash(shasum:*),\
 Read,Edit,Write,Glob,Grep"
 for h in seat seat_status board review flow facts guardrail_test prepush check_build_env session_end loopguard card memslice memlife; do
   ALLOW="$ALLOW,Bash(python3 .ai-teammates/hooks/$h.py:*)"
@@ -281,32 +283,22 @@ launch() {
   # (the --allowedTools trap in 04-ROUTING). The callers pass the brief first.
   [ "$CTO_TOOLS" != "default" ] && set -- "$@" --tools "$CTO_TOOLS"
   [ -n "$CTO_SETTINGS" ] && set -- --settings "$CTO_SETTINGS" "$@"
-  if [ "$PROVIDER" = "anthropic" ]; then
-    # config.json cto.model was ignored on this path: every session ran on
-    # whatever Claude Code defaulted to.
-    [ "$EFFORT" != "default" ] && set -- --effort "$EFFORT" "$@"
-    # MEASURED 2026-10-05: the CTO inherited every MCP server in the owner's setup (claude.ai
-    # connectors, five Cloudflare plugin servers, claude-mem search). They connect after the first
-    # call and their tool definitions then ride in EVERY call: ~100k tokens of a ~200k baseline on
-    # Opus, re-read from cache 100+ times a session. The CTO used two of those tools in three days.
-    # It works through the shell and the hooks; plugins (claude-mem capture) still load.
-    case "$CTO_MCP" in
-      inherit) ;;
-      none)    set -- --strict-mcp-config "$@" ;;
-      *)       set -- --strict-mcp-config --mcp-config "$CTO_MCP" "$@" ;;
-    esac
-    if [ -n "$MODEL" ] && [ "$MODEL" != "default" ]; then
-      claude --model "$MODEL" "$@"
-    else
-      claude "$@"
-    fi
+  # config.json cto.model was ignored once: every session ran on whatever Claude Code defaulted to.
+  [ "$EFFORT" != "default" ] && set -- --effort "$EFFORT" "$@"
+  # MEASURED 2026-10-05: the CTO inherited every MCP server in the owner's setup (claude.ai
+  # connectors, five Cloudflare plugin servers, claude-mem search). They connect after the first
+  # call and their tool definitions then ride in EVERY call: ~100k tokens of a ~200k baseline on
+  # Opus, re-read from cache 100+ times a session. The CTO used two of those tools in three days.
+  # It works through the shell and the hooks; plugins (claude-mem capture) still load.
+  case "$CTO_MCP" in
+    inherit) ;;
+    none)    set -- --strict-mcp-config "$@" ;;
+    *)       set -- --strict-mcp-config --mcp-config "$CTO_MCP" "$@" ;;
+  esac
+  if [ -n "$MODEL" ] && [ "$MODEL" != "default" ]; then
+    claude --model "$MODEL" "$@"
   else
-    # Claude Code does not recognise Ollama model names and would assume a 200k
-    # window, silently truncating. The [1m] suffix is a Claude Code convention
-    # that `ollama launch` rejects against its own registry; the env var is the
-    # form that works on this path.
-    export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$CTX"      # config.json cto.context_window
-    ollama launch claude --model "$MODEL" -- "$@"
+    claude "$@"
   fi
 }
 

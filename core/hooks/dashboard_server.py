@@ -152,7 +152,7 @@ def team() -> dict:
     import seat
     import seat_status
     specs = seat.load_agents()
-    live = {s.get("seat"): s for s in seat_status.running_seats()[0] if s.get("seat")}
+    live = {s.get("seat"): s for s in seat_status.running_seats() if s.get("seat")}
     last = {}
     runs = _config.state_dir() / "agent_runs.jsonl"
     if runs.exists():

@@ -12,15 +12,15 @@ cto                   # start talking
 `install.sh` writes `.ai-teammates/` into your project (hooks, agent specs,
 docs, config, board) and puts `cto` and `ai-teammates` on your PATH. Outside
 `.ai-teammates/` it also: registers its hooks in `.claude/settings.json`
-(merging, never replacing yours), writes a deny-list into `opencode.json`, and
-installs a git `pre-push` hook (never over one it did not write). Runtime state
+(merging, never replacing yours) and installs a git `pre-push` hook (never over one
+it did not write). Runtime state
 lives in `.git/ai-teammates/`, shared by every worktree and never committed.
 
 Re-running upgrades hooks, docs and `cto.md`. It never touches your config,
 board, `RULES.md`, or seat specs you already have, and does not bring back a seat you dropped.
 
 `cto setup` asks the questions the installer does not: which memory (claude-mem, MemPalace or
-both, scoped to this project), which seats to keep and on which harness and model, the model per
+both, scoped to this project), which seats to keep and on which model, the model per
 card tier, the branches, what counts as product code, the delegation policy and the integration
 checks. Each default is what is configured now, so re-running it changes only what you change.
 `--yes` takes every default; `--answers file.json` scripts it (the keys are in `setup.py`). It is

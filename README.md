@@ -184,7 +184,7 @@ cto setup
 
 - **Memory:** claude-mem, MemPalace, or both (the default), scoped to this project. It prints the
   install command of any that is missing.
-- **Team:** the CTO's model, which seats to keep, each seat's harness and model, and the model per
+- **Team:** the CTO's model, which seats to keep, each seat's model, and the model per
   card tier. `--verify-models` makes one short call per model before anything is written.
 - **Scope:** the production and integration branches, what counts as product code, whether the CTO
   may edit product code itself (`allow` / `ask` / `block`), and the checks run on every landed card.
@@ -194,7 +194,7 @@ It ends with `cto --doctor`. In scripts: `cto setup --yes`, or `--answers answer
 **4. Commit the install:**
 
 ```bash
-git add .ai-teammates .claude/settings.json opencode.json
+git add .ai-teammates .claude/settings.json
 git commit -m "chore: install AI-teammates"
 ```
 

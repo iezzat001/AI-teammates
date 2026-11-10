@@ -130,3 +130,6 @@ transfer to another.
   deepseek-v4-pro needed ~280s per hard call; minimax-m3 was the vision option.
 - A routing doc once named `glm-5.3-flash`, which `ollama list` never had. Verify that a
   model resolves before writing it into a config.
+
+The code for those paths outlived them. It was removed in 2026-11 (#14): the installer's
+`opencode.json` deny-list, the harness choice in `cto setup`, and the launcher's Ollama path.
