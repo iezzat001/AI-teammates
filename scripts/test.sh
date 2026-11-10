@@ -53,6 +53,11 @@ echo "── install ──"
 # OpenCode deny-list into every project and told the owner to commit it.
 if [ -e opencode.json ]; then echo "FAIL: install.sh wrote opencode.json, a file no supported harness reads"; exit 1; fi
 echo "  ok    install.sh writes nothing for a harness that is not supported"
+# Delegation is the rule from the first minute: a fresh config says so in a place the owner reads.
+if ! python3 -c 'import json,sys; sys.exit(0 if json.load(open(".ai-teammates/config.json")).get("delegation") == {"cto_product_edits": "block"} else 1)'; then
+  echo "FAIL: a fresh install's config.json does not set delegation.cto_product_edits to block"; exit 1
+fi
+echo "  ok    a fresh install's config blocks the CTO from writing product code itself"
 git add -A && git commit -qm "chore: install AI-teammates"
 # An upgrade of an installed project must change only what changed. FOUND 2026-10-28: every re-run
 # rewrote .claude/settings.json without its final newline - a diff on every upgrade of a project whose

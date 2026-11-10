@@ -133,12 +133,14 @@ if [ ! -f "$DEST/config.json" ]; then
   "project": "$NAME",
   "cto": { "model": "default" },
   "protected_branches": ["$PROD", "development"],
-  "guarded_paths": [$GUARDED]
+  "guarded_paths": [$GUARDED],
+  "delegation": { "cto_product_edits": "block" }
 }
 JSON
   echo "  config  : created (production branch: $PROD, integration: development)"
   echo "            product code (guarded_paths): $GUARDED"
-  echo "            check both in .ai-teammates/config.json before real work"
+  echo "            delegation: block (the CTO writes cards; seats write the product code)"
+  echo "            check these in .ai-teammates/config.json, or run: cto setup"
 else
   echo "  config  : preserved"
 fi

@@ -65,6 +65,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **Delegation is the default (#15).** `delegation.cto_product_edits` is `block` when it is not
+  set: the CTO's own edits to product code are refused, with the edit tools and through the shell,
+  and it is told to write a card. It was `allow`, and no installer set it. **An upgraded project
+  with no `delegation` key changes behaviour**: set `"delegation": {"cto_product_edits": "ask"}`
+  or `"allow"` in `config.json` (or `cto setup`) to keep the old one. A new install's config says
+  `block`, `cto setup` defaults to it and always writes the choice, a value that is none of the
+  three is treated as `block`, and the pre-flight reports an `allow` on a line the CTO's brief
+  keeps. `cto.md` says it plainly: the CTO plans, writes cards, reviews and lands.
 - The pre-flight's INHERITANCE check asks what Claude Code inherits: that the hook registration
   (`.claude/settings.json`) and the hooks are committed on the production branch. It used to ask
   whether `opencode.json` was. STATIC fails a seat on any harness but `claude-code`. MODELS checks

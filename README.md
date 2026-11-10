@@ -44,8 +44,9 @@ flowchart TB
     dev -->|"promotion: pre-push hook<br/>and independent review"| main[("main")]
 ```
 
-1. **You** describe the work. The **CTO** decides whether to do it itself or delegate it.
-2. Delegated work becomes a **task card**: what must be true afterwards, the exact files that may
+1. **You** describe the work. The **CTO** plans it. It does not write product code itself: the
+   guard blocks that unless you allow it (`delegation` in `config.json`).
+2. The work becomes a **task card**: what must be true afterwards, the exact files that may
    change, and commands that prove it. A card that is too big is refused and split.
 3. The **runner** starts a teammate in a fresh git worktree, enforces its budget, and stops it if
    it stalls. Hooks refuse any edit outside the card's files while it works.
@@ -187,7 +188,8 @@ cto setup
 - **Team:** the CTO's model, which seats to keep, each seat's model, and the model per
   card tier. `--verify-models` makes one short call per model before anything is written.
 - **Scope:** the production and integration branches, what counts as product code, whether the CTO
-  may edit product code itself (`allow` / `ask` / `block`), and the checks run on every landed card.
+  may edit product code itself (`block` by default, `ask` or `allow`), and the checks run on every
+  landed card.
 
 It ends with `cto --doctor`. In scripts: `cto setup --yes`, or `--answers answers.json`.
 

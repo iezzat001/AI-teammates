@@ -331,6 +331,22 @@ def check_hook():
         bad(f"no AI-teammates pre-push hook in {_config.hooks_dir()} — re-run install.sh")
 
 
+def delegation_line(policy: str) -> tuple:
+    """(kind, text) for the pre-flight. `note` when the owner let the CTO write product code itself:
+    an `ok` line is only counted in the CTO's brief, and this one the CTO has to read."""
+    if policy == "allow":
+        return "note", ("delegation is `allow`: the CTO may write product code itself, so nothing makes it "
+                        "delegate. The owner's choice (config.json delegation.cto_product_edits; `cto setup`)")
+    return "ok", (f"delegation is `{policy}`: product code reaches the project through cards"
+                  + (", or with the owner's yes each time" if policy == "ask" else ""))
+
+
+def check_delegation_policy():
+    print("\n  DELEGATION — does product code reach the project through cards?")
+    kind, text = delegation_line(_config.delegation_policy())
+    {"ok": ok, "note": note}[kind](text)
+
+
 def check_harness():
     """Claude Code is the only harness: its hooks are what stop a seat during a run.
 
@@ -611,7 +627,9 @@ def check_guard():
             ("config.json, by cto setup", bash("cto setup --yes"), "ask"),
             ("config.json, by running setup.py", bash("python3 .ai-teammates/hooks/setup.py --yes --no-doctor"), "ask"),
             ("config.json, by ai-teammates setup", bash("ai-teammates setup --answers a.json"), "ask"),
-            ("CONTROL: a product file in a feature worktree", edit(Path(td) / "p-feat" / "src" / "a.ts"), "allow"),
+            # a doc, not src/: since 2026-11 the CTO's own product edits are blocked by the delegation
+            # policy (checked below), so a product file would no longer show what this control is for
+            ("CONTROL: an ordinary file in a feature worktree", edit(Path(td) / "p-feat" / "docs" / "x.md"), "allow"),
             ("CONTROL: reading config.json", bash("cat .ai-teammates/config.json | python3 -m json.tool"), "allow"),
             ("CONTROL: running a hook script", bash("python3 .ai-teammates/hooks/card.py check X-1"), "allow"),
             ("CONTROL: memlife retire-term (it adds a memory tombstone)",
@@ -667,9 +685,22 @@ def check_guard():
         policy("block")
         expect("conflict resolution during a merge is allowed under block",
                sh("rev-parse", "-q", "--verify", "MERGE_HEAD", cwd=pm).returncode == 0 and edit(pm / "src" / "a.ts") == "allow")
+        # 2026-11-10: the policy was `allow` when unset and no installer set it, so the one rule that
+        # makes the CTO delegate was off in every project (pilot: 5 of 94 cards delegated). Unset now
+        # means block, and so does a value that is not one of the three: a guard that cannot decide refuses.
         policy("")
-        expect("CONTROL: with no delegation key, a CTO edit in a feature worktree is allowed as before",
-               edit(feat / "src" / "a.ts") == "allow")
+        expect("with no delegation key, a CTO edit to a product file is blocked: delegation is the default",
+               edit(feat / "src" / "a.ts") == "block" and bash("echo x > ../p-feat/src/a.ts") == "block")
+        policy("sometimes")
+        expect("a policy that is not allow / ask / block is treated as block",
+               edit(feat / "src" / "a.ts") == "block")
+        policy("")
+        expect("CONTROL: with no delegation key, docs, the board and reading product code stay allowed",
+               edit(feat / "docs" / "x.md") == "allow" and bash("cat ../p-feat/src/a.ts") == "allow"
+               and edit(dev_wt / ".ai-teammates" / "board.json") == "allow")
+        expect("the pre-flight says so when the owner chose allow, on a line the CTO's brief keeps",
+               delegation_line("allow")[0] == "note" and delegation_line("block")[0] == "ok"
+               and delegation_line("ask")[0] == "ok")
 
         # FRAMEWORK SOURCE: a project's agents do not change AI-teammates itself. FOUND 2026-10-29: the
         # pilot project's CTO, asked to fix a failing setup check, edited the framework's test in its
@@ -1392,7 +1423,9 @@ def check_setup():
                and c["memory"].get("mempalace_wing") == "proj" and c["memory"].get("claude_mem_projects") == ["proj"])
         expect("CONTROL: what setup does not ask about is kept (card limits, retired terms)",
                c.get("cards") == {"max_edit_files": 4} and c["memory"].get("retired") == ["old-term"]
-               and c["guarded_paths"] == ["src/"] and "seat_models" not in c and "delegation" not in c)
+               and c["guarded_paths"] == ["src/"] and "seat_models" not in c)
+        expect("--yes on a project with no delegation policy writes block: tasks go through cards",
+               c.get("delegation") == {"cto_product_edits": "block"})
         if not (Path.home() / ".claude-mem" / "settings.json").exists():
             expect("...and prints the install command of a memory that is not installed",
                    "npx claude-mem install" in p.stdout)
@@ -1436,6 +1469,13 @@ def check_setup():
         expect("a harness other than claude-code is refused, and nothing is changed",
                p.returncode == 1 and "claude-code" in p.stdout and (ai / "config.json").read_text() == before
                and spec("ui-developer") == before_spec)
+
+        answers.write_text(json.dumps({"delegation": "allow"}))
+        p = setup("--answers", str(answers))
+        expect("CONTROL: the owner may still choose allow, and it is written as chosen",
+               p.returncode == 0 and cfg().get("delegation") == {"cto_product_edits": "allow"})
+        answers.write_text(json.dumps({"delegation": "ask"}))
+        setup("--answers", str(answers))
 
         before = (ai / "config.json").read_text()
         p = setup("--yes", CLAUDE_AGENT_NAME="cto")
@@ -2442,7 +2482,7 @@ def run(check, *args):
 def main():
     s = seats()
     print(f"  {len(s)} seats defined")
-    for check, args in ((check_static, (s,)), (check_tracked, ()), (check_hook, ()), (check_harness, ()),
+    for check, args in ((check_static, (s,)), (check_tracked, ()), (check_hook, ()), (check_delegation_policy, ()), (check_harness, ()),
                         (check_models, (s,)),
                         (check_parity, ()), (check_parity_rules, ()), (check_guard, ()), (check_loopguard, ()),
                         (check_cards, ()), (check_delegation_report, ()), (check_setup, ()), (check_seat_limits, ()), (check_memory, ()), (check_memslice, ()),
