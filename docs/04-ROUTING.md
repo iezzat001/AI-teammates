@@ -32,6 +32,10 @@ card instead and it runs on Opus 5.5.
 usage credits" on this account, so it is not used. Confirm an id resolves before putting it in a
 config, and record what you find on the board.
 
+`claude-haiku-5-5` also resolves (checked 2026-11-11), but on a one-word reply with the same flags
+it cost $0.079 where Haiku 4.5 cost $0.016. One sample each; `mechanical` means the cheapest model
+that can do a rename, so the default stays Haiku 4.5. Measure on your own account before changing it.
+
 **What a session carries matters more than the model's price.** Everything in context is
 re-sent with every call of a session. Measured 2026-10-05 on the owner's CTO sessions: a ~200k
 token baseline before any work, of which ~100k were the tool definitions of MCP servers inherited

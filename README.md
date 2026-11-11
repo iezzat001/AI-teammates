@@ -167,60 +167,48 @@ Tested on macOS and Linux (CI runs the full suite on both).
 git clone https://github.com/iezzat001/AI-teammates.git ~/AI-teammates
 ```
 
-**2. Install it into your project:**
+**2. Point it at your project** (any git repository with at least one commit):
 
 ```bash
-cd ~/code/your-project
-~/AI-teammates/install.sh
+~/AI-teammates/install.sh ~/code/your-project
 ```
 
 This adds `.ai-teammates/` to your project, registers the hooks, and puts `cto` and
 `ai-teammates` in `~/.local/bin` (add that folder to your `PATH` if the installer says so).
+From a terminal it goes straight on into the setup.
 
-**3. Choose memory, team and scope** (once; it asks, with what was detected as each default):
+**3. Answer the setup's questions** (`cto setup`; each default is what it detected):
 
-```bash
-cto setup
-```
-
+- **Tool and plan:** it checks that Claude Code is installed and signed in, and asks whether you
+  use a subscription or API billing (so reports can say whether a cost is an estimate or money).
 - **Memory:** claude-mem, MemPalace, or both (the default), scoped to this project. It prints the
   install command of any that is missing.
-- **Team:** the CTO's model, which seats to keep, each seat's model, and the model per
+- **Team:** the CTO's model and effort, which seats to keep, each seat's model, and the model per
   card tier. `--verify-models` makes one short call per model before anything is written.
 - **Scope:** the production and integration branches, what counts as product code, whether the CTO
   may edit product code itself (`block` by default, `ask` or `allow`), and the checks run on every
   landed card.
+- **Spend:** the daily budget for card runs and what one card run may cost by default.
+- **Workspace:** it lists branches that are fully merged and worktrees that are stale or idle, and
+  removes them only if you say yes (every deleted branch is tagged `archive/...` first, so it can
+  be restored; unmerged branches, worktrees with uncommitted files and the remote are never
+  touched). Then it commits the install and creates the `development` branch with its own
+  checkout at `../your-project-dev`, where the CTO works. Work flows
+  `feature branch -> development -> main`.
 
-It ends with `cto --doctor`. In scripts: `cto setup --yes`, or `--answers answers.json`.
+It ends with `cto --doctor`. In scripts: `install.sh <project> --yes` takes every default and
+deletes nothing; `--answers answers.json` sets any of them (the keys are in `setup.py`);
+`--no-setup` only installs.
 
-**4. Commit the install:**
-
-```bash
-git add .ai-teammates .claude/settings.json
-git commit -m "chore: install AI-teammates"
-```
-
-Until this is committed, new worktrees start without guardrails.
-
-**5. Create the integration branch and its own checkout:**
-
-Work flows `feature branch -> development -> main`. The CTO works in the `development`
-checkout, never on `main`:
+**4. Start the CTO:**
 
 ```bash
-git branch development
-git worktree add ../your-project-dev development
+cd ~/code/your-project-dev
+cto
 ```
 
-Skip this step if your project already has a `development` branch with a checkout.
-
-**6. Start the CTO:**
-
-```bash
-cd ../your-project-dev
-cto --doctor    # check your setup
-cto             # start talking
-```
+The first start runs the whole guardrail suite (about two minutes). Later starts take a second,
+until the hooks, the config or your tools change.
 
 ---
 
@@ -230,7 +218,8 @@ cto             # start talking
 cto                      # interactive session: give it a task, read the report, give it the next
 cto "fix the typo in the pricing page"    # one task, headless, exits when done
 cto --doctor             # check the environment
-cto setup                # change memory, team or scope (your own terminal: an agent may not run it)
+cto setup                # change any setup choice (your own terminal: an agent may not run it)
+cto --selftest           # run the whole guardrail suite now
 ai-teammates install     # upgrade the hooks and docs in this project (your config is kept)
 ai-teammates uninstall   # remove everything cleanly
 ```

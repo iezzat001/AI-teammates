@@ -1,10 +1,17 @@
 #!/usr/bin/env bash
 # Install AI-teammates into a project.
 #
+#   /path/to/AI-teammates/install.sh ~/your-project      point it at the project, from anywhere
 #   cd ~/your-project && /path/to/AI-teammates/install.sh
 #
 # Copies the hooks, agent specs and docs into <project>/.ai-teammates, writes a
 # config, puts `cto` on your PATH, and leaves the project's own files alone.
+# A first install from a terminal goes straight on into `cto setup`, which asks
+# its questions, commits the install and creates the development checkout.
+#
+#   install.sh <project> --yes               setup with every default (scripts, CI)
+#   install.sh <project> --answers a.json    setup from a file
+#   install.sh <project> --no-setup          only install
 #
 # Re-running upgrades the hooks and docs and preserves board.json and config.
 
@@ -18,16 +25,33 @@ command -v python3 >/dev/null || { echo "python3 is required (3.9 or newer)." >&
 SRC="$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")")"
 export PATH="/usr/bin:$PATH"
 
+usage() { echo "usage: ai-teammates [install] [<project folder>] [--yes | --answers file.json | --no-setup]
+       ai-teammates setup | doctor | uninstall        (from inside the project)" >&2; exit 2; }
 MODE="${1:-install}"
 case "$MODE" in
-  install|uninstall) ;;
+  install|uninstall) [ $# -gt 0 ] && shift ;;
   doctor)  exec "$SRC/bin/cto" --doctor ;;
   setup)   exec "$SRC/bin/cto" "$@" ;;
-  *)       echo "usage: ai-teammates [install|setup|doctor|uninstall]" >&2; exit 2 ;;
+  -*)      MODE=install ;;                 # options only: install here
+  *)       [ -d "$MODE" ] || usage         # a folder: install into it
+           MODE=install ;;
 esac
+# Until 2026-11 the installer only worked from inside the project. `install.sh <project>` is
+# how a new user says it: clone AI-teammates, point it at the project.
+if [ $# -gt 0 ] && [ "${1#-}" = "$1" ]; then
+  [ -d "$1" ] || { echo "no such folder: $1" >&2; exit 1; }
+  cd "$1"; shift
+fi
+# What is left are options for `cto setup`, which follows the install when there is someone to
+# ask (a terminal) or the answers were given (--yes, --answers). --no-setup: only install.
+NO_SETUP=""; SETUP_ARGS=()
+for a in "$@"; do
+  if [ "$a" = "--no-setup" ]; then NO_SETUP=1; else SETUP_ARGS+=("$a"); fi
+done
+[ "$MODE" = uninstall ] && [ ${#SETUP_ARGS[@]} -gt 0 ] && usage
 
 PROJECT="$(git rev-parse --show-toplevel 2>/dev/null)" || {
-  echo "Run this from inside a git repository." >&2; exit 1; }
+  echo "$(pwd) is not inside a git repository. In the project folder: git init, make a first commit, then run this again." >&2; exit 1; }
 DEST="$PROJECT/.ai-teammates"
 NAME="$(basename "$PROJECT")"
 
@@ -109,7 +133,9 @@ echo "  agents  : $(ls "$DEST"/agents/*.md 2>/dev/null | wc -l | tr -d ' ')"
 echo "  docs    : $(ls "$DEST"/docs/*.md | wc -l | tr -d ' ')"
 
 # --- config, preserved across upgrades -------------------------------------
+FRESH=""
 if [ ! -f "$DEST/config.json" ]; then
+  FRESH=1
   # The CTO runs on Claude Code's own default model until you name one (04-ROUTING).
   #
   # Production is the branch this repository already ships from, not an assumption:
@@ -303,29 +329,38 @@ else
 fi
 
 echo
+# Setup next, when it can run: it asks the questions the installer does not, commits the install
+# and creates the integration branch and its checkout. On a first install with a terminal, or
+# whenever its options were given. An upgrade from a terminal does not ask everything again.
+if [ -z "$NO_SETUP" ] && { [ ${#SETUP_ARGS[@]} -gt 0 ] || { [ -n "$FRESH" ] && [ -t 0 ] && [ -t 1 ]; }; }; then
+  echo "  Installed. Now the setup: \`cto setup\` (run it again any time to change a choice)."
+  cd "$PROJECT"
+  exec "$SRC/bin/cto" setup ${SETUP_ARGS[@]+"${SETUP_ARGS[@]}"}
+fi
+
 # The guardrails are only inherited by new worktrees if they are ON the default
 # branch. An uncommitted hook registration protects the checkout you are standing
 # in and nothing else — guardrail_test will (correctly) fail until this is done.
-# Not committed automatically: this is the user's repo, not ours.
+# Not committed here: `cto setup` offers to, and otherwise it is these two lines.
 uncommitted="$(git -C "$PROJECT" status --porcelain -- .ai-teammates .claude/settings.json .gitignore 2>/dev/null | wc -l | tr -d ' ')"
 if [ "$uncommitted" != "0" ]; then
   # only paths that exist: `git add` refuses the whole command over one missing pathspec
   paths=""; for f in .ai-teammates .claude/settings.json .gitignore; do
     [ -e "$PROJECT/$f" ] && paths="$paths $f"
   done
-  echo "  COMMIT THESE — until you do, new worktrees start unguarded:"
+  echo "  NOT COMMITTED YET — until it is, new worktrees start unguarded. \`cto setup\` offers to, or:"
   echo "    git add$paths"
   echo "    git commit -m 'chore: install AI-teammates'"
   echo
 fi
-# `cto` works from the integration branch's checkout (bin/cto). A project that has only
-# its production branch gets the two commands that create it, instead of a refusal later.
+# `cto` works from the integration branch's checkout (bin/cto), never on production.
 read -r PROD_BR INT_BR <<< "$(cd "$PROJECT" && python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import _config; p, i = _config.branches(); print(p, i or "")' "$DEST/hooks")"
 if [ -n "${INT_BR:-}" ] && ! git -C "$PROJECT" rev-parse --verify --quiet "refs/heads/$INT_BR" >/dev/null; then
-  echo "  NEXT: create the integration branch '$INT_BR' and its own checkout (after committing):"
-  echo "    git branch $INT_BR $PROD_BR"
-  echo "    git worktree add ../$NAME-dev $INT_BR"
+  echo "  The integration branch '$INT_BR' and its checkout do not exist yet: \`cto setup\` creates them."
   echo
 fi
-echo "  Done. Next:  cto setup    (memory, team and scope; it ends with cto --doctor)    then:  cto"
+echo "  Done. Next, in $PROJECT:"
+echo "    cto setup    the tool and plan, memory, team, scope and spend; it commits the install,"
+echo "                 creates the '${INT_BR:-development}' checkout, and ends with cto --doctor"
+echo "    cto          in that checkout"
 echo "  First read: $DEST/docs/00-START-HERE.md"

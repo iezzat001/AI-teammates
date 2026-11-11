@@ -1656,7 +1656,7 @@ def check_setup():
         expect("refused inside an agent session (the CTO's or a seat's), and nothing is written",
                p.returncode == 2 and "owner" in p.stdout and (ai / "config.json").read_text() == before)
 
-        p = setup("--ask", stdin="bogus\nnone\n" + "\n" * 40)
+        p = setup("--ask", stdin="\n" + "bogus\nnone\n" + "\n" * 40)       # billing first, then memory
         c = cfg()
         expect("asked: a wrong answer is asked again, and 'none' removes the memory scope but keeps the rest",
                p.returncode == 0 and "one of:" in p.stdout and "default" not in c.get("memory", {})
@@ -1676,6 +1676,98 @@ def check_setup():
         p = setup("--answers", str(answers), "--verify-models", AI_TEAMMATES_CLAUDE_BIN=str(stub))
         expect("--verify-models: when every model answers, the choice is written",
                p.returncode == 0 and cfg().get("seat_models") == {"hard": "good-model"})
+
+        # TOOLS, PLAN AND SPEND (issue #18): what a new owner is asked first. Until 2026-11 setup asked
+        # nothing about how Claude Code is paid for, the CTO's effort, or what a day may cost.
+        answers.write_text(json.dumps({"billing": "api", "cto_effort": "max", "daily_usd": 7.5, "card_usd": 0.5}))
+        p = setup("--answers", str(answers))
+        c = cfg()
+        expect("tools and plan: billing, the CTO's effort, the daily budget and the default cap per card are written",
+               p.returncode == 0 and c["cto"].get("billing") == "api" and c["cto"].get("effort") == "max"
+               and c.get("budget") == {"daily_usd": 7.5} and c.get("cards") == {"max_edit_files": 4, "default_usd": 0.5})
+        expect("...and it says which coding tool runs the team, and that it is signed in",
+               "Claude Code" in p.stdout and "signed in" in p.stdout)
+        before = (ai / "config.json").read_text()
+        for bad_answers, word in (({"daily_usd": "lots"}, "number"), ({"card_usd": 50}, "most one card run may cost"),
+                                  ({"billing": "barter"}, "one of")):
+            answers.write_text(json.dumps(bad_answers))
+            p = setup("--answers", str(answers))
+            expect(f"an answer that cannot be right is refused, nothing written: {bad_answers}",
+                   p.returncode == 1 and word in p.stdout and (ai / "config.json").read_text() == before)
+        out_stub = Path(td) / "signedout"
+        out_stub.mkdir()
+        (out_stub / "claude").write_text("#!/bin/sh\necho '{\"loggedIn\": false}'\n")
+        (out_stub / "claude").chmod(0o755)
+        p = setup("--yes", PATH=f"{out_stub}:{env['PATH']}")
+        expect("a Claude Code that is not signed in is said so, with the command that fixes it",
+               "claude auth login" in p.stdout)
+        expect("no commit in the project yet: the workspace step says so and creates nothing",
+               "no commit" in p.stdout and not (Path(td) / "proj-dev").exists())
+
+        # WORKSPACE (issue #18). After install the owner had to commit by hand, create the integration
+        # branch and its checkout by hand, and `cto` refused to start until they had. Setup now does it,
+        # and offers to clean up: only what is merged, only on a yes, and reversibly.
+        ws = Path(td) / "ws" / "shop"
+        wai = ws / ".ai-teammates"
+        wai.mkdir(parents=True)
+        shutil.copytree(here, wai / "hooks", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        (wai / "agents").mkdir()
+        (wai / "agents" / "cto.md").write_text("---\nname: cto\norchestrator: true\nharness: claude-code\n---\n# cto\n")
+        (wai / "config.json").write_text(json.dumps({"project": "shop", "protected_branches": ["main", "development"],
+                                                     "guarded_paths": ["src/"]}))
+        (ws / ".claude").mkdir()
+        (ws / ".claude" / "settings.json").write_text("{}\n")
+        (ws / "src").mkdir()
+        (ws / "src" / "a.ts").write_text("a\n")
+        wg = lambda *a, cwd=ws: subprocess.run([GIT, *a], cwd=cwd, env=env, capture_output=True, text=True)
+        wg("init", "-q", "-b", "main"); wg("config", "user.email", "o@example.com"); wg("config", "user.name", "owner")
+        wg("add", "src"); wg("commit", "-qm", "first")             # the install itself is not committed yet
+        wg("branch", "old/merged")                                  # fully merged into main
+        wg("checkout", "-q", "-b", "wip/keep")
+        (ws / "src" / "b.ts").write_text("b\n")
+        wg("add", "src/b.ts"); wg("commit", "-qm", "wip"); wg("checkout", "-q", "main")
+        wg("worktree", "add", "-q", str(ws.parent / "shop-gone"), "-b", "old/gone")
+        shutil.rmtree(ws.parent / "shop-gone")                      # a stale record: its folder is gone
+        wg("worktree", "add", "-q", str(ws.parent / "shop-clean"), "-b", "old/clean")
+        wg("worktree", "add", "-q", str(ws.parent / "shop-dirty"), "-b", "old/dirty")
+        (ws.parent / "shop-dirty" / "src" / "a.ts").write_text("changed\n")
+        wsetup = lambda *args: subprocess.run([sys.executable, str(wai / "hooks" / "setup.py"), *args], cwd=ws,
+                                              env=env, capture_output=True, text=True, timeout=120)
+        branches = lambda: set(wg("for-each-ref", "--format=%(refname:short)", "refs/heads").stdout.split())
+        tags = lambda: wg("tag", "-l", "archive/*").stdout.split()
+        wts = lambda: wg("worktree", "list", "--porcelain").stdout
+        dev = ws.parent / "shop-dev"
+        p = wsetup("--yes")
+        expect("workspace: --yes commits the install on the production branch, and creates the integration branch "
+               "and its checkout beside the project",
+               p.returncode == 0 and "development" in branches() and (dev / ".ai-teammates" / "config.json").exists()
+               and wg("log", "-1", "--format=%s", "main").stdout.strip() == "chore: install AI-teammates"
+               and wg("rev-parse", "--abbrev-ref", "HEAD", cwd=dev).stdout.strip() == "development")
+        committed = wg("show", "--name-only", "--format=%an", "main").stdout.split()
+        expect("...as the owner, and only the install's own files",
+               committed[:1] == ["owner"] and committed[1:]
+               and all(f.startswith((".ai-teammates/", ".claude/")) for f in committed[1:]))
+        expect("workspace: --yes deletes nothing, and says what could be cleaned",
+               {"old/merged", "old/gone", "old/clean", "old/dirty", "wip/keep"} <= branches()
+               and (ws.parent / "shop-clean").exists() and not tags() and "prunable" in wts()
+               and "old/merged" in p.stdout)
+        answers.write_text(json.dumps({"workspace": {"prune_worktrees": True, "remove_merged_worktrees": True,
+                                                     "delete_merged_branches": True}}))
+        p = wsetup("--answers", str(answers))
+        b = branches()
+        expect("workspace: on a yes, merged branches are deleted, each tagged archive/... first so it can be restored",
+               not {"old/merged", "old/gone", "old/clean"} & b and len(tags()) == 3
+               and any(t.startswith("archive/old/merged-") for t in tags()))
+        expect("...a clean worktree on a merged branch is removed, and the stale record is pruned",
+               not (ws.parent / "shop-clean").exists() and "prunable" not in wts())
+        expect("workspace: never touched: an unmerged branch, a worktree with uncommitted files and its branch, "
+               "the protected branches and the integration checkout",
+               {"wip/keep", "old/dirty", "main", "development"} <= b and dev.exists()
+               and (ws.parent / "shop-dirty" / "src" / "a.ts").read_text() == "changed\n")
+        head, n = wg("rev-parse", "main").stdout, wts().count("worktree ")
+        p = wsetup("--yes")
+        expect("workspace: running setup again changes nothing and fails nothing",
+               p.returncode == 0 and wg("rev-parse", "main").stdout == head and wts().count("worktree ") == n)
 
 
 def check_seat_limits():
@@ -2446,6 +2538,14 @@ def check_launcher():
         expect("cto.tools default offers everything (no --tools)", "--tools" not in a)
         expect("cto.claude_md_excludes leaves that CLAUDE.md out, home expanded (--settings claudeMdExcludes)",
                json.loads(sj).get("claudeMdExcludes") == [os.path.expanduser("~/.claude/CLAUDE.md")])
+
+        # issue #18: started on the production branch with no integration checkout, `cto` listed git
+        # commands to type. `cto setup` creates the branch and the checkout: say that.
+        cfgp.write_text(json.dumps({"cto": {"model": "stubmodel"}, "protected_branches": ["main", "development"]}))
+        r, prompt = launch('print("  ok    stub: all fine")\n')
+        expect("on the production branch with no integration checkout, cto stops and points at `cto setup`",
+               r.returncode == 1 and "cto setup" in r.stdout + r.stderr and not prompt)
+        cfgp.write_text(json.dumps({"cto": {"model": "stubmodel"}, "protected_branches": ["main"]}))
 
         # START (issue #17). MEASURED 2026-11-10: `cto` ran this whole suite at every start, ~120 s,
         # of which under 1 s checks the project; and the brief had the CTO read cto.md (2,362 words)

@@ -3,10 +3,9 @@
 ## Install
 
 ```bash
-cd ~/your-project
-/path/to/AI-teammates/install.sh
-cto setup             # memory, team and scope, once; ends with cto --doctor
-cto                   # start talking
+/path/to/AI-teammates/install.sh ~/your-project   # install; from a terminal it goes on into the setup
+cto setup             # (what it runs) the questions, the commit, the development checkout; ends with cto --doctor
+cd ../your-project-dev && cto                     # start talking
 ```
 
 `install.sh` writes `.ai-teammates/` into your project (hooks, agent specs,
@@ -19,10 +18,15 @@ lives in `.git/ai-teammates/`, shared by every worktree and never committed.
 Re-running upgrades hooks, docs and `cto.md`. It never touches your config,
 board, `RULES.md`, or seat specs you already have, and does not bring back a seat you dropped.
 
-`cto setup` asks the questions the installer does not: which memory (claude-mem, MemPalace or
-both, scoped to this project), which seats to keep and on which model, the model per
-card tier, the branches, what counts as product code, the delegation policy and the integration
-checks. Each default is what is configured now, so re-running it changes only what you change.
+`cto setup` asks the questions the installer does not: how Claude Code is paid for (it also
+checks that it is installed and signed in), which memory (claude-mem, MemPalace or both, scoped
+to this project), the CTO's model and effort, which seats to keep and on which model, the model
+per card tier, the branches, what counts as product code, the delegation policy, the integration
+checks, and what card runs may cost. Then it sets up the workspace: it offers to remove branches
+that are fully merged and worktrees that are stale or idle (only on a yes, each branch tagged
+`archive/...` first; nothing unmerged, dirty or remote is touched), commits the install, and
+creates the integration branch with its checkout at `../<project>-dev`.
+Each default is what is configured now, so re-running it changes only what you change.
 `--yes` takes every default; `--answers file.json` scripts it (the keys are in `setup.py`). It is
 yours, not an agent's: it refuses inside an agent session, and the guard asks you if one tries.
 

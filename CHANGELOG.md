@@ -8,6 +8,20 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **One command from a clone to a working project (#18).** `install.sh <project>` installs into a
+  project from anywhere (`ai-teammates install <project>` too), and a first install from a terminal
+  goes straight on into `cto setup`. `install.sh <project> --yes` or `--answers file.json` runs the
+  setup without asking; `--no-setup` only installs.
+- `cto setup` asks more, and finishes the job (#18). **Tool and plan:** it checks that Claude Code
+  is installed and signed in and asks whether it is a subscription or API billing (`cto.billing`;
+  `seat.py report --cost` says whether its dollars are an estimate or money). **Team:** the CTO's
+  effort. **Spend:** `budget.daily_usd` and `cards.default_usd`. **Workspace:** it lists branches
+  with nothing the production branch lacks and worktrees that are stale or idle, and removes them
+  only on a yes of their own (`--yes` is not that yes); each deleted branch is tagged
+  `archive/<branch>-<time>` first; an unmerged branch, a worktree with uncommitted files, the
+  protected branches and the remote are never touched. Then it commits the install and creates
+  the integration branch with its checkout at `../<project>-dev`. An answer about the plan or the
+  spend that cannot be right is refused before anything is written.
 - **Cost on the card, and caps (#16).** A card has `budget.usd`, set by the CTO: Claude Code stops
   the run there (`--max-budget-usd`) and the run ends `over_budget`, with nothing committed.
   `card.py check` refuses a cap above the owner's maximum for one run (`cards.max_usd`, 5; default
@@ -74,6 +88,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- `cto`, started on the production branch with no integration checkout, points at `cto setup`,
+  which creates it (#18). `scripts/test.sh` reaches its development checkout the way a new user
+  does: `install.sh <project>`, then `install.sh <project> --yes`.
 - **`cto` starts in seconds, not minutes (#17).** The pre-flight ran the whole guardrail suite at
   every start: about 120 seconds, measured, of which under one second checks the project. It now
   runs the project checks every time (`guardrail_test.py --preflight`) and the framework's

@@ -53,6 +53,8 @@ CLAUDE = os.environ.get("AI_TEAMMATES_CLAUDE_BIN", "claude")
 # Verified to resolve through `claude --model` on 2026-10-04, with the cost of a one-word reply:
 # Haiku 4.5 $0.058, Sonnet 5.5 $0.082, Opus 5.5 $0.163 (the 5.0 models they replace: Sonnet 5
 # $0.13, Opus 5 $0.21, so the newer ones are also cheaper). Override in config.json "seat_models".
+# MEASURED 2026-11-11, one-word reply, same flags: claude-haiku-5-5 resolves and cost $0.079, where
+# Haiku 4.5 cost $0.016. `mechanical` is the cheapest model that can do a rename, so it stays 4.5.
 DEFAULT_MODELS = {"mechanical": "claude-haiku-4-5-20251001",
                   "standard": "claude-sonnet-5-5",
                   "hard": "claude-opus-5-5"}
