@@ -19,7 +19,7 @@ Answers file (every key optional):
          (a seat by the `name:` in its spec, not its file name; an unknown one refuses, changing nothing)
      "seat_models": {"mechanical": "<id>", "standard": "<id>", "hard": "<id>"},
      "production_branch": "main", "integration_branch": "development",
-     "guarded_paths": ["src/"], "delegation": "allow" | "ask" | "block",
+     "guarded_paths": ["src/"], "delegation": "block" | "ask" | "allow",
      "integration_checks": ["npm test"]}
 
 The owner's, never an agent's: it rewrites config.json and the seat specs, which the guard
@@ -244,10 +244,12 @@ def step_scope(ask, cfg: dict) -> None:
     cfg["protected_branches"] = [prod, integ]
     cfg["guarded_paths"] = ask("guarded_paths", "Product code folders (comma-separated)",
                                list(cfg.get("guarded_paths") or _config.guarded()))
+    # block is the default and is written down: tasks reach the project through cards, and the
+    # owner sees the rule in config.json instead of having to know what an absent key means.
     had = (cfg.get("delegation") or {}).get("cto_product_edits")
-    pol = ask("delegation", "When the CTO itself edits product code", had or "allow", ("allow", "ask", "block"))
-    if pol != "allow" or had:
-        cfg["delegation"] = {**(cfg.get("delegation") or {}), "cto_product_edits": pol}
+    pol = ask("delegation", "When the CTO itself edits product code (block = it must write a card)",
+              had if had in ("block", "ask", "allow") else "block", ("block", "ask", "allow"))
+    cfg["delegation"] = {**(cfg.get("delegation") or {}), "cto_product_edits": pol}
     checks = ask("integration_checks", "Checks run on every landed card (comma-separated commands, '-' for none)",
                  list(cfg.get("integration_checks") or []))
     checks = [c for c in checks if c != "-"]

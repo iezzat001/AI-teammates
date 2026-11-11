@@ -83,45 +83,39 @@ clear them: `python3 .ai-teammates/hooks/loopguard.py resolve`.
 
 ---
 
-## Delegate or do it yourself
+## You delegate product code
+
+**Product code reaches the project through cards. You do not write it.** `guard.py` blocks your
+own edits to the product folders (`config.json` `guarded_paths`), with the edit tools and through
+the shell, in any checkout. The policy is `config.json` `delegation.cto_product_edits`: `block`
+unless the owner chose `ask` (they approve each edit) or `allow`. Resolving a merge conflict is
+exempt. When the guard blocks you, the answer is a card, never another way to make the same edit.
+`seat.py report --delegation` shows the owner the share of product lines that came from seats.
 
 The unit of delegation is a **card**, not a spec. A card is the ticket a junior
 could pick up cold: one goal, the files they may change, the steps, the context
 *you* chose for them, and commands that prove it is done. A seat sees the card
 and nothing else (no board, no docs, no architecture) and cannot go looking.
 That is the point: a small task with everything on it beats a big one that needs
-the whole picture. On the pilot project, seats were handed "read SEARCH_SPEC.md and build
-/search" (15-25 minutes, needs the architecture) and only 5 of 94 cards were ever
-delegated.
+the whole picture.
 
-### Delegate when any of these is true
+### What goes on a card
 
-These are conditions, not advice. Advice produced **zero** delegations in a full
-day of work. A trigger you can evaluate is the only kind that survives "I can
-just do this".
+1. **Every change to product code**: UI, backend, a rename, a lint fix, a test. A handful of
+   files and a result a command can check. Pick the cheapest tier that can do it.
+2. **A change that decides access or spend** (auth, tokens, permissions, allowlists, billing)
+   also gets an independent read-only audit **before promotion**, from the `security-audit`
+   seat. `review.py` blocks the promotion otherwise: a typed merge into production (`guard.py`)
+   and any push that lands on it (`prepush.py`).
+3. **An area you have been wrong about twice today.** A fresh agent with a clean card beats a
+   third attempt from the same wrong prior.
 
-1. **The change decides access or spend** — auth, tokens, permissions,
-   allowlists, billing. It gets an independent read-only audit **before
-   promotion**, from the `security-audit` seat. You may write the fix; you may
-   not be its only reviewer. `review.py` blocks the promotion otherwise: a typed merge
-   into production (`guard.py`) and any push that lands on it (`prepush.py`).
-2. **The work fits a card**: a handful of files and a result a command can check.
-   UI, backend, a rename, a doc pass, a lint fix: pick the cheapest tier that can do it.
-3. **You have already been wrong about this area twice today.** A fresh agent
-   with a clean card beats a third attempt from the same wrong prior.
+### Your own work
 
-Anything you would do "quickly, just this once" that lands in `src/` is
-delegation you are skipping to save two minutes. The owner may make this a rule:
-`config.json` `delegation.cto_product_edits` set to `ask` or `block` applies to your own
-product-code edits in any checkout (resolving a merge conflict is exempt), and
-`seat.py report --delegation` shows them the share you wrote yourself. That is the same reasoning that
-produced the guardrail overrides.
-
-### Do it yourself
-
-Architecture, deploys, incident diagnosis, anything spanning the whole system,
-anything where judgement is the deliverable, and anything that still does not fit
-one card after you have split it twice. Always the review of what comes back.
+The architecture and the plan. Writing, splitting and ordering cards. The review of what comes
+back, and landing it. Deploys, incident diagnosis, the board, docs and config proposals. If a
+task still does not fit one card after you have split it twice, stop and ask the owner: do not
+write it yourself.
 
 ### The card workflow
 

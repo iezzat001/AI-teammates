@@ -652,14 +652,15 @@ def _product_file(p):
 
 def check_delegation(tool, ti):
     """The owner's policy for the CTO writing product code itself: config.json
-    "delegation": {"cto_product_edits": "allow" | "ask" | "block"}, allow when unset.
+    "delegation": {"cto_product_edits": "block" | "ask" | "allow"}, block when unset
+    (_config.delegation_policy): product code reaches the project through cards.
 
     MEASURED 2026-10-17: on one large owner request the CTO delegated two cards and wrote 982 of
     1,252 product lines itself (78%), in a feature worktree it made, where no rule applied; the
     "delegate when" rules in cto.md are advice to the model. The CTO's session only: a seat works
     inside its card's scope. Resolving a conflict while a merge is in progress is not authoring."""
-    policy = (_config.load().get("delegation") or {}).get("cto_product_edits") or "allow"
-    if policy not in ("ask", "block") or os.environ.get("CLAUDE_AGENT_NAME") != "cto" \
+    policy = _config.delegation_policy()
+    if policy == "allow" or os.environ.get("CLAUDE_AGENT_NAME") != "cto" \
             or os.environ.get("AI_TEAMMATES_SEAT") or os.environ.get("AI_TEAMMATES_CARD"):
         return
     hit, how = None, "edits"

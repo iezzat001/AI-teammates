@@ -58,6 +58,16 @@ def load() -> dict:
     return cfg
 
 
+def delegation_policy() -> str:
+    """What happens when the CTO itself edits product code: "block", "ask" or "allow".
+
+    config.json "delegation": {"cto_product_edits": ...}. Block unless the owner chose otherwise:
+    until 2026-11 an unset policy meant allow and no installer set one, so the one rule that makes
+    the CTO delegate was off in every project. A value that is none of the three is block too."""
+    v = (load().get("delegation") or {}).get("cto_product_edits")
+    return v if v in ("allow", "ask") else "block"
+
+
 def protected() -> tuple:
     return tuple(load()["protected_branches"])
 
