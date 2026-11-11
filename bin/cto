@@ -48,10 +48,12 @@ if [ -n "${INT_BR:-}" ] && [ "$(git rev-parse --abbrev-ref HEAD)" = "${PROD_BR:-
   exit 1
 fi
 
-# Apple's git first. /usr/local/bin/git has been a 2021 build (2.19) that lacks
-# --sparse and misbehaves with worktrees; it failed 247 times inside a harness
-# before anyone noticed. Cheap insurance.
-export PATH="/usr/bin:$PATH"
+# Your own git, the first on PATH. Until 2026-11 /usr/bin was put first for everybody, the fix
+# for ONE machine whose /usr/local/bin/git was a 2021 build (2.19, no --sparse; it failed 247
+# times inside a harness). What that needs: only when the git on PATH is older than 2.25 and
+# another is newer does that one's folder go first (_config.tool_path).
+NEWPATH="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import _config; print(_config.tool_path())' "$HOOKS" 2>/dev/null)"
+[ -n "$NEWPATH" ] && export PATH="$NEWPATH"
 
 # One python call, several values. The earlier form put `|| echo` between the
 # heredoc marker and its body, which silently made the heredoc part of the

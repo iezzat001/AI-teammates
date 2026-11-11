@@ -23,7 +23,10 @@ command -v python3 >/dev/null || { echo "python3 is required (3.9 or newer)." >&
 # Resolve symlinks: `ai-teammates` on PATH is a link to this file, and dirname
 # of the LINK is ~/.local/bin - so every `ai-teammates install` failed at cp.
 SRC="$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "${BASH_SOURCE[0]}")")"
-export PATH="/usr/bin:$PATH"
+# Your own git, unless it is too old to work with and a newer one is installed (_config.tool_path).
+# Until 2026-11 /usr/bin was put first here for everybody.
+NEWPATH="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import _config; print(_config.tool_path())' "$SRC/core/hooks" 2>/dev/null || true)"
+[ -n "$NEWPATH" ] && export PATH="$NEWPATH"
 
 usage() { echo "usage: ai-teammates [install] [<project folder>] [--yes | --answers file.json | --no-setup]
        ai-teammates setup | doctor | uninstall        (from inside the project)" >&2; exit 2; }
@@ -101,8 +104,8 @@ done
 # system one cost us 247 silent failures inside a harness.
 gv="$(git --version | awk '{print $3}')"
 if [ "$(printf '%s\n2.25.0\n' "$gv" | sort -V | head -1)" != "2.25.0" ]; then
-  echo "  WARNING: git $gv is older than 2.25 — worktrees and --sparse will misbehave."
-  echo "           the hooks prefix PATH=/usr/bin to dodge a shadowing install."
+  echo "  WARNING: git $gv is older than 2.25 and no newer one was found — worktrees will misbehave."
+  echo "           Install a current git and run this again."
 fi
 
 # --- lay down the files ----------------------------------------------------

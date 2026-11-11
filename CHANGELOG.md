@@ -88,6 +88,18 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **Your own git (#19).** The hooks, the launcher, the installer, seat runs and acceptance commands
+  use the git that is first on `PATH`. They used `/usr/bin/git` wherever it exists and put
+  `/usr/bin` first in `PATH`, the fix for one machine with a 2021 git in `/usr/local/bin`. That
+  case is still handled, and only that one: a git on `PATH` older than 2.25 is passed over when
+  `/usr/bin/git` is newer (`_config.git_bin`, `_config.tool_path`).
+- **The review gate works for any stack (#19).** Its file rules for auth and middleware-like files
+  match source files in any language (they knew six extensions, so `auth.rs` or
+  `AuthService.swift` was not flagged), and `review.sensitive_paths` / `review.sensitive_code` in
+  `config.json` add a project's own patterns. A pattern that is not a regular expression blocks
+  the promotion.
+- `mempalace` is found on `PATH` or at `memory.mempalace_bin`; the fallback to a Homebrew path is
+  gone. The backend and audit seat specs no longer name one database or vendor (#19).
 - `cto`, started on the production branch with no integration checkout, points at `cto setup`,
   which creates it (#18). `scripts/test.sh` reaches its development checkout the way a new user
   does: `install.sh <project>`, then `install.sh <project> --yes`.

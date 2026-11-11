@@ -75,7 +75,9 @@ def cfg() -> dict:
 
 def _mempalace_python() -> str:
     """The interpreter the `mempalace` command itself runs on (it is not our python)."""
-    exe = shutil.which("mempalace") or "/opt/homebrew/bin/mempalace"
+    # config.json memory.mempalace_bin when the owner set it, else the one on PATH. Until 2026-11
+    # the fallback was one machine's Homebrew path.
+    exe = cfg().get("mempalace_bin") or shutil.which("mempalace") or ""
     try:
         first = Path(exe).read_text(errors="ignore").splitlines()[0]
         if first.startswith("#!"):

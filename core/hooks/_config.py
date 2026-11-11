@@ -13,10 +13,51 @@ silently disables itself on a bad config is the worst outcome available.
 """
 import json
 import os
+import re
+import shutil
 import subprocess
 from pathlib import Path
 
-GIT = "/usr/bin/git" if os.path.exists("/usr/bin/git") else "git"
+MIN_GIT = (2, 25)       # worktrees and `--sparse` as the hooks use them
+
+
+def _git_version(exe: str) -> tuple:
+    try:
+        out = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10).stdout
+        m = re.search(r"(\d+)\.(\d+)(?:\.(\d+))?", out)
+        return tuple(int(x or 0) for x in m.groups()) if m else ()
+    except Exception:
+        return ()
+
+
+def git_bin(path: str = None, system: str = "/usr/bin/git") -> str:
+    """The git to run: the user's own, the first on PATH.
+
+    Until 2026-11 this was /usr/bin/git wherever that exists, and /usr/bin was put first in PATH
+    for everything we launch. That fixed ONE machine (2026-09: a 2021 build, git 2.19, in
+    /usr/local/bin shadowed the system's; `--sparse` failed 247 times inside a harness) by
+    overriding every user's git. What that incident needs is narrower: only when the git on PATH
+    is older than 2.25 AND the system one is newer, use the system one."""
+    first = shutil.which("git", path=path)
+    if first:
+        v = _git_version(first)
+        if v >= MIN_GIT or not os.path.exists(system) or _git_version(system) <= v:
+            return first
+        return system
+    return system if os.path.exists(system) else "git"
+
+
+def tool_path(path: str = None, system: str = "/usr/bin/git") -> str:
+    """PATH for a process we launch (a seat, an acceptance command): the user's, unchanged,
+    unless git_bin() had to pass over the git on it; then that git's folder goes first."""
+    path = os.environ.get("PATH", "") if path is None else path
+    chosen, first = git_bin(path, system), shutil.which("git", path=path)
+    if not first or chosen == first or os.sep not in chosen:
+        return path
+    return os.path.dirname(chosen) + os.pathsep + path
+
+
+GIT = git_bin()
 
 DEFAULTS = {
     # [production, integration]. "master" used to sit second here, which made it

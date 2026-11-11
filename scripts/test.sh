@@ -47,6 +47,11 @@ echo "export const a = 1" > src/a.ts
 echo "# test project" > README.md
 git add -A && git commit -qm "initial"
 
+# The seat specs ship to every project, whatever its stack (issue #19): no vendor or database names.
+if grep -n -i -E "supabase|postgres|wrangler|cloudflare|ON CONFLICT" "$SRC"/core/agents/*.md; then
+  echo "FAIL: a seat spec in core/agents names one stack (above): projects add their own in their copy"; exit 1
+fi
+
 echo "── install ──"
 # Pointed at the project from somewhere else, as a new user does it: `install.sh <project>`.
 # Until 2026-11 it only worked from inside the project. No terminal and no setup options here,

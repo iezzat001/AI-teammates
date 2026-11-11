@@ -2539,6 +2539,16 @@ def check_launcher():
         expect("cto.claude_md_excludes leaves that CLAUDE.md out, home expanded (--settings claudeMdExcludes)",
                json.loads(sj).get("claudeMdExcludes") == [os.path.expanduser("~/.claude/CLAUDE.md")])
 
+        # issue #19: the launcher put /usr/bin first in PATH for everybody. The user's own git (new
+        # enough) is the one in use; `cto --doctor` prints which.
+        real_git = shutil.which(GIT) or GIT
+        (stubdir / "git").write_text(f'#!/bin/sh\nexec "{real_git}" "$@"\n')
+        (stubdir / "git").chmod(0o755)
+        r = subprocess.run(["bash", str(cto), "--doctor"], cwd=proj, env=env, capture_output=True, text=True, timeout=120)
+        expect("the launcher uses the git that is first on the user's PATH (it forced /usr/bin first)",
+               f"git in use : {stubdir}/git" in r.stdout)
+        (stubdir / "git").unlink()
+
         # issue #18: started on the production branch with no integration checkout, `cto` listed git
         # commands to type. `cto setup` creates the branch and the checkout: say that.
         cfgp.write_text(json.dumps({"cto": {"model": "stubmodel"}, "protected_branches": ["main", "development"]}))
@@ -2656,6 +2666,108 @@ def check_selftest_stamp():
             out = "(timed out: it ran the whole suite)"
         expect("--project runs the checks about this project and none of the self-test",
                "STATIC —" in out and "PARITY —" in out and "GUARD —" not in out and "CARDS —" not in out)
+
+
+def check_any_machine():
+    """Does it run on a machine and a stack that are not the one it was written on? (issue #19)
+
+    FOUND 2026-11-10 (repo audit): `/usr/bin` was forced first in PATH for the launcher, the
+    installer, every seat and every acceptance command, and GIT was /usr/bin/git wherever that
+    exists - the fix for ONE machine whose /usr/local/bin/git was a 2021 build, applied to every
+    user's own git. memslice fell back to a Homebrew path. And the review gate's file rules knew six
+    extensions and could not be extended: an `auth.rs` was not a security-touching file."""
+    print("\n  ANY MACHINE — the user's own tools, and a review gate for any stack")
+    import os
+    import shutil
+    import tempfile
+    here = Path(__file__).resolve().parent
+    expect = lambda desc, cond: (ok if cond else bad)(f"any machine: {desc}")
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+
+        def fake_git(name, version):
+            d = td / name
+            d.mkdir()
+            (d / "git").write_text(f"#!/bin/sh\necho 'git version {version}'\n")
+            (d / "git").chmod(0o755)
+            return d
+        new, old, sysd = fake_git("new", "2.44.0"), fake_git("old", "2.19.0"), fake_git("sys", "2.39.5 (Apple Git-154)")
+        pick = lambda path, system: _config.git_bin(path=str(path), system=str(system))
+        expect("the git on PATH is the one used when it is new enough, not /usr/bin's",
+               pick(new, sysd / "git") == str(new / "git"))
+        expect("a git on PATH older than 2.25 is still avoided when the system one is newer (the 2021 incident)",
+               pick(old, sysd / "git") == str(sysd / "git"))
+        expect("...and used when there is nothing newer", pick(old, td / "nothing" / "git") == str(old / "git"))
+        expect("no git on PATH: the system one", pick(td / "empty", sysd / "git") == str(sysd / "git"))
+        tp = _config.tool_path(path=f"{new}:/bin", system=str(sysd / "git"))
+        expect("a process we launch gets the user's PATH unchanged when its git is fine",
+               tp == f"{new}:/bin")
+        tp = _config.tool_path(path=f"{old}:/bin", system=str(sysd / "git"))
+        expect("...and the newer git's folder first only when the one on PATH is too old",
+               tp.split(":")[0] == str(sysd) and tp.endswith(f"{old}:/bin"))
+
+        # mempalace: where the owner says, else PATH; never a path from somebody else's machine
+        mp = td / "mp"
+        mp.mkdir()
+        (mp / "mempalace").write_text("#!/somewhere/else/python3\n")
+        (mp / "mempalace").chmod(0o755)
+        code = "import sys; sys.path.insert(0, sys.argv[1]); import memslice; print(memslice._mempalace_python())"
+        ask = lambda env: subprocess.run([sys.executable, "-c", code, str(here)], capture_output=True, text=True,
+                                         env={**os.environ, **env}).stdout.strip()
+        expect("mempalace comes from config.json memory.mempalace_bin when it is set",
+               ask({"MEMSLICE_CONFIG": json.dumps({"mempalace_bin": str(mp / "mempalace")}),
+                    "PATH": "/usr/bin:/bin"}) == "/somewhere/else/python3")
+        expect("CONTROL: ...else from PATH", ask({"MEMSLICE_CONFIG": "{}", "PATH": f"{mp}:/usr/bin:/bin"})
+               == "/somewhere/else/python3")
+        expect("...and with neither there is no machine-specific fallback (was /opt/homebrew/bin/mempalace)",
+               ask({"MEMSLICE_CONFIG": "{}", "PATH": "/usr/bin:/bin"}) == sys.executable
+               and "/opt/homebrew" not in (here / "memslice.py").read_text())
+
+        # the review gate's file rules
+        proj = td / "proj"
+        ai = proj / ".ai-teammates"
+        ai.mkdir(parents=True)
+        shutil.copytree(here, ai / "hooks", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
+        g = lambda *a: subprocess.run([GIT, *a], cwd=proj, env=env, capture_output=True, text=True)
+        g("init", "-q", "-b", "main"); g("config", "user.email", "t@t"); g("config", "user.name", "t")
+        (ai / "config.json").write_text(json.dumps({"protected_branches": ["main", "development"]}))
+        g("add", "-A"); g("commit", "-qm", "i"); g("branch", "development")
+
+        def flagged(name, files, review_cfg=None):
+            """Commit `files` on a new branch; (review.py's exit code, its output)."""
+            (ai / "config.json").write_text(json.dumps({"protected_branches": ["main", "development"],
+                                                        **({"review": review_cfg} if review_cfg else {})}))
+            g("checkout", "-q", "-b", name, "development")
+            for rel, text in files.items():
+                f = proj / rel
+                f.parent.mkdir(parents=True, exist_ok=True)
+                f.write_text(text)
+                g("add", rel)
+            g("commit", "-qm", name)
+            r = subprocess.run([sys.executable, str(ai / "hooks" / "review.py"), "--range", f"development..{name}"],
+                               cwd=proj, env=env, capture_output=True, text=True)
+            g("checkout", "-q", "development")
+            return r.returncode, r.stdout + r.stderr
+
+        benign = "pub fn x() {}\n"
+        got = {n: flagged(f"f{i}", {n: benign})[0] for i, n in enumerate(
+            ["src/auth.rs", "ios/AuthService.swift", "app/session_middleware.kt", "lib/access_policy.ex"])}
+        expect(f"auth and middleware files are security-touching in any language, not only ts/js/py/go/rb (got {got})",
+               set(got.values()) == {1})
+        got = {n: flagged(f"c{i}", {n: benign})[0] for i, n in enumerate(
+            ["src/plain.rs", "src/_authenticated/page.tsx", "src/billing/plan.rs", "assets/auth.png"])}
+        expect(f"CONTROL: ordinary files, a route group named _authenticated and an image are not (got {got})",
+               set(got.values()) == {0})
+        rc, _ = flagged("p1", {"src/billing/price.rs": benign}, {"sensitive_paths": ["(^|/)billing/"]})
+        expect("a project's own path pattern is honoured (config.json review.sensitive_paths)", rc == 1)
+        rc, out = flagged("p2", {"src/pay.rs": "fn pay() { charge_customer(42); }\n"},
+                          {"sensitive_code": ["charge_customer\\("]})
+        expect("a project's own code pattern is honoured (review.sensitive_code), on the lines a commit adds",
+               rc == 1 and "(content)" in out)
+        rc, out = flagged("p3", {"src/zzz.rs": benign}, {"sensitive_paths": ["("]})
+        expect("a pattern in config.json that is not a regex blocks the promotion and says so (fail closed)",
+               rc == 1 and "sensitive_paths" in out)
 
 
 def check_board_digest():
@@ -2874,7 +2986,7 @@ def main():
     selftest = ((check_harness, ()), (check_parity_rules, ()), (check_guard, ()), (check_loopguard, ()),
                 (check_cards, ()), (check_delegation_report, ()), (check_setup, ()), (check_seat_limits, ()),
                 (check_memory, ()), (check_memslice, ()), (check_memlife, ()), (check_fact_review, ()),
-                (check_launcher, ()), (check_selftest_stamp, ()), (check_board_digest, ()), (check_dashboard, ()),
+                (check_launcher, ()), (check_selftest_stamp, ()), (check_any_machine, ()), (check_board_digest, ()), (check_dashboard, ()),
                 (check_session_end, ()), (check_scrubber, ()), (check_prepush, ()))
     mode = "project" if "--project" in sys.argv else "preflight" if "--preflight" in sys.argv else "full"
     for check, args in project:

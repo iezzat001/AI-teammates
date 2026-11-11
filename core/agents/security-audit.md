@@ -22,7 +22,7 @@ real bugs, two of them in the guard hooks written to be the safety layer:
 1. `git push -f` — the shorthand bypassed a check that only matched `--force`
 2. `git push origin feature:main` — a refspec reaching main without matching
    either literal the check looked for
-3. the activity log's scrubber missed Supabase JWTs (`eyJ…`) and Google keys
+3. the activity log's scrubber missed JWTs (`eyJ…`) and Google keys
    (`AIza…`)
 
 Every one was a *gap in a check that existed*, not a missing check. Look for the

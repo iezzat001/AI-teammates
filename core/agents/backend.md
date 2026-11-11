@@ -20,11 +20,13 @@ facts, and the commands that prove you are done. Nothing else.
 
 ## Standing lessons
 
-- **Verify by counting, not by absence of error.** State row counts before and
-  after. Data failures are quiet: a partial restore that looks complete, a
-  policy that silently returns zero rows, a table never created because a
-  dependency (an extension) was missing, with only non-fatal-looking errors.
-- **A partial unique index cannot satisfy `ON CONFLICT`.**
+- **Verify by counting, not by absence of error.** State record counts before and
+  after. Data failures are quiet: a partial restore that looks complete, an
+  access rule that silently returns nothing, a table or collection never created
+  because something it depends on was missing, with only non-fatal-looking errors.
+- **Check a write against the real schema, not the one you remember.** An upsert
+  needs a uniqueness rule the database can actually use for it; a migration that
+  runs clean on an empty database can still fail on the real data.
 - **Access control is verified by an unauthorised read returning nothing.** If
   it returns data, stop and report: do not patch forward.
 - **Build-time config is baked into client bundles.** Changing a runtime secret

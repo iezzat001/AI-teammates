@@ -403,7 +403,7 @@ def run(agents: dict, cid: str, seat_name: str = "") -> int:
         env = dict(os.environ)
         env.update(CLAUDE_AGENT_NAME=name, AI_TEAMMATES_SEAT=spec.get("seat", name),
                    AI_TEAMMATES_CARD=str(cardmod.path(cid)), AI_TEAMMATES_HEADLESS="1")
-        env["PATH"] = "/usr/bin:" + env.get("PATH", "")
+        env["PATH"] = _config.tool_path(env.get("PATH", ""))    # the user's own tools (issue #19)
         st = supervise(card_command(spec, card, cardmod.render(card), model), wt, env,
                        b["minutes"], b["tool_calls"], cardmod.limits()["idle_minutes"] * 60)
         rc, res, tools, lines, err = st["rc"], st["result"], st["tools"], st["lines"], st["err"]
