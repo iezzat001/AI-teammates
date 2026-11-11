@@ -8,6 +8,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Cost on the card, and caps (#16).** A card has `budget.usd`, set by the CTO: Claude Code stops
+  the run there (`--max-budget-usd`) and the run ends `over_budget`, with nothing committed.
+  `card.py check` refuses a cap above the owner's maximum for one run (`cards.max_usd`, 5; default
+  cap `cards.default_usd`, 1). `budget.daily_usd` in `config.json` (20; `0` for none): a card that
+  could take the day's card runs over it is not launched and the ask is recorded for the owner.
+  Every run is appended to its card file (`runs`: status, seat, model, seconds, tool calls, cost,
+  tokens) with a running `spent_usd`. `seat.py report --cost` shows spend per day, card and model;
+  `seat.py spend` puts today's spend into the CTO's brief. A free-form seat run is capped at the
+  maximum for one run, and `cto.max_usd` caps a headless `cto "task"`.
 - `AGENTS.md` (and `CLAUDE.md`, which imports it): how an AI agent picks an issue, works in its own
   worktree, tests, and opens a pull request without touching the owner's tools or projects.
 
@@ -121,6 +130,11 @@ without its fix:
 
 ### Fixed
 
+- `seat.py land` refused a card right after running it on a real install: the runner works in the
+  integration checkout and leaves its own record there uncommitted (the board note, now the card
+  file too), and `land` refused any uncommitted change. The session record no longer counts; any
+  other uncommitted change still refuses. The suite missed it because its hooks ran from the
+  production checkout (#16).
 - `scripts/test.sh` runs the suite's launcher checks against this checkout's `bin/cto`. They ran
   whatever `cto` was already on `PATH` (a developer's installed copy), and were skipped in CI,
   which has none: the sandbox's own `~/.local/bin` was not on `PATH` (#14).

@@ -49,6 +49,10 @@ LIMITS = {
     "max_tool_calls": 60,
     "default_minutes": 15,
     "default_tool_calls": 40,
+    # Money. Claude Code stops a run at its cap itself (--max-budget-usd); on a subscription the
+    # figure is its own estimate of what the run would cost, and it counts against the plan's limit.
+    "default_usd": 1.0,         # what a card may spend when it does not say
+    "max_usd": 5.0,             # the most one run may spend; more than this is two cards, or a cheaper tier
     "idle_minutes": 10,
     "acceptance_timeout": 300,
 }
@@ -84,7 +88,23 @@ def save(card: dict) -> Path:
 def budget(card: dict) -> dict:
     L, b = limits(), card.get("budget") or {}
     return {"minutes": b.get("minutes", L["default_minutes"]),
-            "tool_calls": b.get("tool_calls", L["default_tool_calls"])}
+            "tool_calls": b.get("tool_calls", L["default_tool_calls"]),
+            "usd": b.get("usd", L["default_usd"])}
+
+
+def record_run(cid: str, run: dict) -> None:
+    """Append one run to the card itself and keep the total it has cost.
+
+    Until 2026-11 a run's cost lived only in the run log, in the git dir: the card, which is what
+    the CTO and the owner read and what is committed, said nothing about what it had cost. Never
+    allowed to fail the run it records."""
+    try:
+        card = load(cid)
+        card.setdefault("runs", []).append(run)
+        card["spent_usd"] = round(sum(r.get("cost_usd") or 0 for r in card["runs"]), 4)
+        save(card)
+    except Exception as e:
+        print(f"  note: the run could not be recorded on card {cid} ({type(e).__name__}: {e})")
 
 
 def edit_scope(card: dict) -> list:
@@ -326,7 +346,8 @@ def split(cid: str, into: list, files=None, independent: bool = False) -> int:
             "acceptance": [a for a in c.get("acceptance") or [] if names((a or {}).get("run"), mine)]
             or [{"run": "<command that exits 0 when this piece is done>", "why": "<what it proves>"}],
             "allow": c.get("allow") or [],
-            "budget": {"minutes": min(b["minutes"], L["max_minutes"]), "tool_calls": min(b["tool_calls"], L["max_tool_calls"])},
+            "budget": {"minutes": min(b["minutes"], L["max_minutes"]), "tool_calls": min(b["tool_calls"], L["max_tool_calls"]),
+                       "usd": min(b["usd"], L["max_usd"])},
             "out_of_scope": c.get("out_of_scope") or [], "stop_and_ask": c.get("stop_and_ask") or [],
         }
     parent = {**c, "children": list(into)}
@@ -427,6 +448,11 @@ def validate(card: dict, expect_id: str = "") -> list:
         bad.append(f"budget over {L['max_minutes']} minutes: split the card")
     if b.get("tool_calls", 0) > L["max_tool_calls"]:
         bad.append(f"budget over {L['max_tool_calls']} tool calls: split the card")
+    usd = b.get("usd", L["default_usd"])
+    if not isinstance(usd, (int, float)) or isinstance(usd, bool) or usd <= 0:
+        bad.append("budget.usd must be a number above 0: what this run may spend, in dollars")
+    elif usd > L["max_usd"]:
+        bad.append(f"budget over ${L['max_usd']:g} for one run: split the card, or give it a cheaper tier")
 
     return bad + holes(card) + plan_problems(card)
 
@@ -477,7 +503,8 @@ def render(card: dict) -> str:
     if card.get("out_of_scope"):
         out += ["", "NOT YOUR JOB:"] + [f"  - {s}" for s in card["out_of_scope"]]
     out += ["", "RULES",
-            f"  - Budget: about {b['minutes']} minutes and {b['tool_calls']} tool calls. A small task should not need it.",
+            f"  - Budget: about {b['minutes']} minutes, {b['tool_calls']} tool calls and ${b['usd']:g}. "
+            "A small task should not need it; the run is stopped when any of them runs out.",
             "  - Edits outside the files above are denied, and so is any command not listed under COMMANDS YOU MAY RUN "
             "(none listed = none allowed). A refusal is not an error to fix: do not retry or rephrase it.",
             "  - Do not commit and do not push. Leave your changes in the working tree; the runner commits.",
@@ -521,7 +548,8 @@ def template(cid: str, seat: str, tier: str, title: str, goal: str) -> dict:
         "memory": {"source": "", "query": "", "ids": [], "text": ""},
         "acceptance": [{"run": "<command that exits 0 when done>", "why": "<what it proves>"}],
         "allow": [],
-        "budget": {"minutes": limits()["default_minutes"], "tool_calls": limits()["default_tool_calls"]},
+        "budget": {"minutes": limits()["default_minutes"], "tool_calls": limits()["default_tool_calls"],
+                   "usd": limits()["default_usd"]},
         "out_of_scope": ["<what a helpful agent might be tempted to also do>"],
         "stop_and_ask": [],
     }
@@ -629,7 +657,7 @@ def main(argv) -> int:
             return 1
         b = budget(c)
         print(f"  card {argv[1]} ok · {len(edit_scope(c))} file(s) in scope · {len(c.get('acceptance') or [])} "
-              f"acceptance · tier {c.get('tier', 'standard')} · {b['minutes']} min / {b['tool_calls']} calls")
+              f"acceptance · tier {c.get('tier', 'standard')} · {b['minutes']} min / {b['tool_calls']} calls / ${b['usd']:g}")
         return 0
     print(__doc__)
     return 0

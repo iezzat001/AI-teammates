@@ -9,6 +9,8 @@
     python3 .ai-teammates/hooks/seat.py run security-audit "Audit main..development"   # free-form, read-only seats
     python3 .ai-teammates/hooks/seat.py report
     python3 .ai-teammates/hooks/seat.py report --delegation [--days N]   # product lines: seats vs the CTO
+    python3 .ai-teammates/hooks/seat.py report --cost [--days N]         # spend per day, card and model
+    python3 .ai-teammates/hooks/seat.py spend                            # today's spend against the daily budget
 
 Two things this exists to answer:
 
@@ -139,6 +141,12 @@ def cmd_run(agents, name, task):
     # appended as its prompt.
     headless = a.get("headless")
     if headless and os.environ.get("SEAT_INTERACTIVE") != "1":
+        # No card sets this run's cap, so it gets the owner's maximum for one run (issue #16): an
+        # audit once ran the owner's usage limit out. Right after `claude`, never after the prompt.
+        if re.match(r"claude\s", headless) and "--max-budget-usd" not in headless:
+            import card as cardmod
+            headless = re.sub(r"^claude\b", f"claude --max-budget-usd {float(cardmod.limits()['max_usd']):g}",
+                              headless)
         # shlex.quote, not json.dumps: JSON quoting is shell double-quoting,
         # so every `code span` in a markdown brief was executed by the shell.
         launch = f'{headless} {shlex.quote(task)}'
@@ -265,6 +273,56 @@ def cmd_report():
     print("  total_cost_usd; absent for free-form runs.")
 
 
+def spend_line() -> str:
+    """One line for the pre-flight, so the CTO's brief carries what today has cost."""
+    import cardrun
+    rows = cardrun.run_rows()
+    now = datetime.now().astimezone()
+    today = now.strftime("%Y-%m-%d")
+    week = {(now - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(7)}
+    cost = lambda days: sum(r.get("cost_usd") or 0 for r in rows if cardrun.local_day(r.get("ts")) in days)
+    runs = sum(1 for r in rows if r.get("card") and cardrun.local_day(r.get("ts")) == today)
+    daily = _config.daily_budget()
+    of = f" of ${daily:.2f}" if daily else " (no daily budget)"
+    return f"  spend: today ${cost({today}):.2f}{of} in {runs} card run(s) · last 7 days ${cost(week):.2f}"
+
+
+def cmd_cost(days: int):
+    """What card runs cost: per day, per card, per model. From the run log, which has every run;
+    a card's own file has its runs too. Claude Code's figures: on a subscription they are its
+    estimate of the cost, which is what counts against the plan's limit."""
+    import cardrun
+    since = (datetime.now().astimezone() - timedelta(days=days - 1)).strftime("%Y-%m-%d")
+    rows = [r for r in cardrun.run_rows() if r.get("card") and cardrun.local_day(r.get("ts")) >= since]
+    if not rows:
+        print(f"  no card runs in the last {days} days")
+        return
+
+    def table(title, key):
+        agg = {}
+        for r in rows:
+            a = agg.setdefault(key(r), {"runs": 0, "usd": 0.0, "in": 0, "out": 0, "over": 0})
+            t = r.get("tokens") or {}
+            a["runs"] += 1
+            a["usd"] += r.get("cost_usd") or 0
+            a["in"] += t.get("in") or 0
+            a["out"] += t.get("out") or 0
+            a["over"] += 1 if r.get("status") == "over_budget" else 0
+        print(f"\n  {title:<28} {'runs':>5} {'usd':>9} {'tokens in':>11} {'tokens out':>11} {'stopped at cap':>15}")
+        for k in sorted(agg, key=lambda k: -agg[k]["usd"] if title != "per day" else k):
+            a = agg[k]
+            print(f"  {str(k)[:28]:<28} {a['runs']:>5} {a['usd']:>9.3f} {a['in']:>11} {a['out']:>11} {a['over']:>15}")
+        return agg
+
+    print(f"  card runs, last {days} days (daily budget: "
+          + (f"${_config.daily_budget():.2f}" if _config.daily_budget() else "none") + ")")
+    table("per day", lambda r: cardrun.local_day(r.get("ts")))
+    table("per card", lambda r: r.get("card"))
+    table("per model", lambda r: r.get("model") or "?")
+    print(f"\n  {'total':<28} {len(rows):>5} {sum(r.get('cost_usd') or 0 for r in rows):>9.3f}")
+    print("  tokens in counts cached input too. Free-form seat runs and the CTO's own session are not in here.")
+
+
 def cmd_delegation(days: int):
     """Product-code lines that reached the integration branch in the last N days, per day: by seats
     (commits authored seat:*, which is how the card runner commits) and by everyone else. Merges are
@@ -321,6 +379,11 @@ def main():
         sys.exit(cardrun.clean(argv[1], "--abandon" in argv))
     elif argv[0] == "run" and len(argv) >= 2:
         sys.exit(cmd_run(agents, argv[1], " ".join(argv[2:]) or "(no task given)"))
+    elif argv[0] == "spend":
+        print(spend_line())
+    elif argv[0] == "report" and "--cost" in argv:
+        i = argv.index("--days") if "--days" in argv else -1
+        cmd_cost(int(argv[i + 1]) if 0 <= i < len(argv) - 1 and argv[i + 1].isdigit() else 7)
     elif argv[0] == "report" and "--delegation" in argv:
         i = argv.index("--days") if "--days" in argv else -1
         cmd_delegation(int(argv[i + 1]) if 0 <= i < len(argv) - 1 and argv[i + 1].isdigit() else 30)

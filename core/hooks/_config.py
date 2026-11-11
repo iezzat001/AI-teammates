@@ -58,6 +58,25 @@ def load() -> dict:
     return cfg
 
 
+# The session's record of what it learned and decided: committed by session_end.py, and written
+# by the card runner in the checkout it works in. Not docs/: those are vendored and install.sh
+# overwrites them on upgrade. Project notes go in RULES.md or briefs/.
+RECORD = [".ai-teammates/board.json", ".ai-teammates/facts.json",
+          ".ai-teammates/RULES.md", ".ai-teammates/briefs/", ".ai-teammates/cards/"]
+DAILY_USD = 20.0
+
+
+def daily_budget() -> float:
+    """What all card runs together may spend in one day, in dollars; 0 = no daily budget.
+
+    config.json "budget": {"daily_usd": N}. The owner's: an agent changing config.json is asked
+    about by guard.py. Unset or unreadable is the default, never "no limit"."""
+    v = (load().get("budget") or {}).get("daily_usd")
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or v < 0:
+        return DAILY_USD
+    return float(v)
+
+
 def delegation_policy() -> str:
     """What happens when the CTO itself edits product code: "block", "ask" or "allow".
 
