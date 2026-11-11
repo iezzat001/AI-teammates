@@ -30,12 +30,9 @@ import _config  # noqa: E402
 GIT = _config.GIT
 REPO = _config.repo_root()
 
-# Safe to commit unattended: the session's record of what it learned and decided.
-# Not docs/: those are vendored and install.sh overwrites them on upgrade, so
-# committing edits there only schedules them for deletion. Project notes go in
-# RULES.md or briefs/.
-RECORD = [".ai-teammates/board.json", ".ai-teammates/facts.json",
-          ".ai-teammates/RULES.md", ".ai-teammates/briefs/", ".ai-teammates/cards/"]
+# Safe to commit unattended: the session's record of what it learned and decided
+# (_config.RECORD, which the card runner shares: it writes those files during a run).
+RECORD = _config.RECORD
 
 
 def sh(*args):

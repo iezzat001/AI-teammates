@@ -897,8 +897,17 @@ elif mode == "loop":
 elif mode == "fail_rc":
     emit({"type": "result", "subtype": "error_during_execution", "is_error": True, "num_turns": 1})
     sys.exit(1)
+elif mode == "over_budget":
+    # what Claude Code 2.1.285 really returns when --max-budget-usd is hit (read from one real call,
+    # 2026-11-10): subtype error_max_budget_usd, is_error, exit 1, and the cost so far
+    open("src/a.txt", "a").write("fixed\n"); tool("src/a.txt")
+    emit({"type": "result", "subtype": "error_max_budget_usd", "is_error": True, "num_turns": 3,
+          "total_cost_usd": 0.61, "terminal_reason": "budget_exhausted", "errors": ["Reached maximum budget ($0.5)"]})
+    sys.exit(1)
 emit({"type": "result", "subtype": "success", "is_error": False, "num_turns": 2,
-      "total_cost_usd": 0.0123, "result": text})
+      "total_cost_usd": float(os.environ.get("STUB_COST", "0.0123")), "result": text,
+      "modelUsage": {"m": {"inputTokens": 10, "outputTokens": 500, "cacheReadInputTokens": 2000,
+                           "cacheCreationInputTokens": 1000, "costUSD": 0.0123}}})
 '''
 
 
@@ -1011,6 +1020,17 @@ def check_cards():
                and "--strict-mcp-config" in joined and "--setting-sources project,local" in joined
                and "bypassPermissions" not in joined and av[-2:-1] == ["--allowedTools"]
                and "Bash(python3 .ai-teammates/hooks/card.py accept:*)" in joined)
+        # COST (issue #16): cost was written to the run log only and nothing capped it. The cap is on the
+        # command line (Claude Code stops the run itself), and every run is recorded ON the card.
+        expect("launch argv: the card's cost cap is passed to Claude Code (--max-budget-usd), the allowlist still last",
+               "--max-budget-usd" in av[:-2] and av[av.index("--max-budget-usd") + 1] == "1"
+               and av[-2:-1] == ["--allowedTools"])
+        c1 = json.loads((proj / ".ai-teammates" / "cards" / "T-1.json").read_text())
+        last = (c1.get("runs") or [{}])[-1]
+        expect("the run is recorded on the card: status, seat, model, cost, tokens, and the total spent",
+               last.get("status") == "done" and last.get("cost_usd") == 0.0123 and last.get("seat") == "tester"
+               and last.get("model") and last.get("tokens") == {"in": 3010, "out": 500}
+               and c1.get("spent_usd") == 0.0123)
         expect("the seat's prompt is the card and only the card",
                "CARD T-1" in av[2] and "DONE WHEN" in av[2] and "orig context" not in av[2])
         expect("the prompt states what must be TRUE and does not hand the seat the shell to paste "
@@ -1197,6 +1217,73 @@ def check_cards():
                and json.loads((proj / ".ai-teammates" / "cards" / "P-3.json").read_text())["parent"] == "P"
                and "P" in board_of("P-3")["note"].split())
 
+        # COST CAPS (issue #16)
+        cardf = lambda cid: json.loads((proj / ".ai-teammates" / "cards" / f"{cid}.json").read_text())
+        lastrun = lambda cid: (cardf(cid).get("runs") or [{}])[-1]
+        mk("U-1", budget={"minutes": 1, "tool_calls": 20, "usd": 0.5})
+        p, r = go("U-1", "over_budget", STUB_ARGV_OUT=str(argv_out))
+        av = json.loads(argv_out.read_text())
+        expect("a run that Claude Code stops at the card's cap ends `over_budget`: not committed, and the reason says so",
+               r and r["status"] == "over_budget" and r["clean"] is False and not r["head"] and p.returncode == 1
+               and "0.5" in r["reason"] and av[av.index("--max-budget-usd") + 1] == "0.5")
+        expect("...the board card is blocked with the reason, and the card records the money that was spent",
+               lastrun("U-1").get("status") == "over_budget" and cardf("U-1").get("spent_usd") == 0.61)
+        mk("U-2", budget={"minutes": 1, "tool_calls": 20, "usd": 0.5})
+        p, r = go("U-2", "edit_ok", STUB_COST="0.7")
+        expect("CONTROL: a run that ENDED normally is judged by its checks, even when its last step went over the cap",
+               r and r["status"] == "done" and r.get("over_cap") is True and "over its" in p.stdout)
+        mk("U-3", budget={"minutes": 1, "tool_calls": 20, "usd": 50})
+        rc, out = cli("check", "U-3")
+        expect("a card asking for more than the owner's maximum per card is refused by card.py check",
+               rc == 1 and "budget over $5" in out)
+        mk("U-3", budget={"minutes": 1, "tool_calls": 20, "usd": 0})
+        rc, out = cli("check", "U-3")
+        expect("...and so is a cap of zero", rc == 1 and "budget.usd" in out)
+        rc, out = cli("new", "U-4", "--seat", "tester")
+        expect("a new card carries the default cap, where the CTO can see and lower it",
+               (cardf("U-4").get("budget") or {}).get("usd") == 1.0)
+
+        cfgp = proj / ".ai-teammates" / "config.json"
+        seatpy = lambda *a: subprocess.run([sys.executable, str(hooks / "seat.py"), *a], cwd=proj, env=base,
+                                           capture_output=True, text=True)
+        today = seatpy("spend").stdout
+        expect("seat.py spend: one line with today's card spend against the daily budget",
+               re.search(r"spend: today \$\d+\.\d\d of \$20\.00", today))
+        cfgp.write_text(json.dumps({"protected_branches": ["main", "development"], "budget": {"daily_usd": 1.5}}))
+        mk("U-5")
+        n_rows = len((state / "agent_runs.jsonl").read_text().splitlines())
+        p, r = go("U-5", "edit_ok")
+        expect("a card that could take today's spend over the daily budget is not launched, and the owner is asked",
+               p.returncode == 75 and "daily budget" in p.stdout and r is None
+               and len((state / "agent_runs.jsonl").read_text().splitlines()) == n_rows
+               and not (Path(td) / "proj-card-u-5").exists())
+        cfgp.write_text(json.dumps({"protected_branches": ["main", "development"], "budget": {"daily_usd": 0}}))
+        p, r = go("U-5", "edit_ok")
+        expect("CONTROL: daily_usd 0 switches the daily budget off, and the same card runs",
+               r and r["status"] == "done")
+        cfgp.write_text(json.dumps({"protected_branches": ["main", "development"]}))
+        rep_out = seatpy("report", "--cost").stdout
+        expect("seat.py report --cost: spend per day, per card and per model, with tokens",
+               re.search(r"U-1\s.*0\.610", rep_out) and "per model" in rep_out and "tokens" in rep_out
+               and re.search(r"total\s", rep_out))
+        # a free-form run (the audit seat) is launched from its spec's own command line: it gets the
+        # owner's maximum per run as its cap, since no card sets one
+        (proj / ".ai-teammates" / "agents" / "audit.md").write_text(
+            "---\nname: audit\nseat: Audit\nharness: claude-code\nmodel: m\nread_only: true\nworktree: .\n"
+            "headless: claude -p --tools Read --strict-mcp-config --permission-mode plan\n---\n# a\n")
+        fake = Path(td) / "fakebin"
+        fake.mkdir()
+        (fake / "claude").write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FREE_ARGV\"\necho report\n")
+        (fake / "claude").chmod(0o755)
+        free = Path(td) / "free.txt"
+        subprocess.run([sys.executable, str(hooks / "seat.py"), "run", "audit", "look at it"], cwd=proj,
+                       env={**base, "PATH": f"{fake}:{base['PATH']}", "FREE_ARGV": str(free)},
+                       capture_output=True, text=True, timeout=60)
+        fa = free.read_text().splitlines() if free.exists() else []
+        expect("a free-form seat run is capped at the owner's maximum per run (--max-budget-usd 5)",
+               "--max-budget-usd" in fa and fa[fa.index("--max-budget-usd") + 1] == "5" and fa[-1] == "look at it")
+        (proj / ".ai-teammates" / "agents" / "audit.md").unlink()
+
         # LANDING (issue #3): a card reaches the integration branch only after its checks pass on the MERGED
         # result. It used to be the CTO's hand-typed `git merge`, and nothing re-ran the card's checks after it.
         devwt = Path(td) / "proj-dev"                               # the integration checkout, as on a real install
@@ -1221,8 +1308,17 @@ def check_cards():
         expect("land: refused while the integration checkout has uncommitted changes",
                rc == 1 and "uncommitted" in out and dev() == before and (Path(td) / "proj-card-l-1").exists())
         g("checkout", "--", "src/b.txt", cwd=devwt)
+        # FOUND 2026-11-10: on a real install the runner works IN the integration checkout, so every run
+        # leaves its own record there uncommitted (the board note; since #16 the card file too), and
+        # `land` then refused the card it had just run. This test never saw it: its hooks live in the
+        # production checkout. The session record is not a reason to refuse; anything else still is.
+        rec = devwt / ".ai-teammates" / "board.json"
+        rec.write_text(rec.read_text() + "\n")
         r1 = json.loads([l for l in (state / "agent_runs.jsonl").read_text().splitlines() if '"L-1"' in l][-1])
         rc, out = land("L-1")
+        expect("land: the runner's own uncommitted record (board, cards) in the integration checkout does not refuse it",
+               rc == 0 and "uncommitted" not in out)
+        g("checkout", "--", ".ai-teammates/board.json", cwd=devwt)
         row = json.loads([l for l in (state / "agent_runs.jsonl").read_text().splitlines() if '"L-1"' in l][-1])
         expect("land: a done card lands, its acceptance re-run on the merged result, and its worktree is cleaned",
                rc == 0 and "1/1" in out and g("merge-base", "--is-ancestor", r1["head"], "development").returncode == 0
@@ -2272,6 +2368,21 @@ def check_launcher():
         expect("cto.tools default offers everything (no --tools)", "--tools" not in a)
         expect("cto.claude_md_excludes leaves that CLAUDE.md out, home expanded (--settings claudeMdExcludes)",
                json.loads(sj).get("claudeMdExcludes") == [os.path.expanduser("~/.claude/CLAUDE.md")])
+
+        # COST (issue #16). What today has cost goes into the brief (`seat.py spend`, tested for real in
+        # CARDS; here a stand-in proves the launcher carries the line to the model). And a headless run
+        # of the CTO itself, which nobody watches, can be capped: config.json cto.max_usd.
+        (hk / "seat.py").write_text('import sys\nif sys.argv[1:] == ["spend"]:\n'
+                                    '    print("  spend: today $0.42 of $20.00 in 3 card run(s)")\n')
+        cfgp.write_text(json.dumps({"cto": {"model": "stubmodel", "max_usd": 3}, "protected_branches": ["main"]}))
+        a = launch('print("  ok    stub: all fine")\n')[1].splitlines()
+        expect("today's spend is in the brief the model is handed", "spend: today $0.42 of $20.00" in "\n".join(a))
+        expect("cto.max_usd caps a headless CTO run (--max-budget-usd 3)",
+               "--max-budget-usd" in a[:-1] and a[a.index("--max-budget-usd") + 1] == "3")
+        cfgp.write_text(json.dumps({"cto": {"model": "stubmodel"}, "protected_branches": ["main"]}))
+        a = launch('print("  ok    stub: all fine")\n')[1].splitlines()
+        expect("CONTROL: with no cto.max_usd there is no cap flag", "--max-budget-usd" not in a)
+        (hk / "seat.py").unlink()
 
 
 def check_board_digest():

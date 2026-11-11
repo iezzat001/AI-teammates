@@ -58,15 +58,18 @@ export PATH="/usr/bin:$PATH"
 # cto.effort (low|medium|high|xhigh|max) is passed as `claude --effort`; "default" or unset = the CLI's own.
 # cto.mcp: "none" (default) = no MCP servers; "inherit" = every server in your user config and plugins;
 # or a path to an MCP config file = only those servers.
-read -r MODEL PROVIDER EFFORT CTO_MCP <<< "$(python3 -c '
+# cto.max_usd: the most a HEADLESS run (`cto "task"`) may spend; Claude Code stops it there. Unset = no cap.
+read -r MODEL PROVIDER EFFORT CTO_MCP CTO_MAX_USD <<< "$(python3 -c '
 import json,sys
 try:
     c = json.load(open(sys.argv[1])).get("cto", {})
 except Exception:
     c = {}
+m = c.get("max_usd")
 print(c.get("model") or "default", c.get("provider") or "anthropic",
-      c.get("effort") or "default", c.get("mcp") or "none")
-' "$CFG/config.json" 2>/dev/null || echo "default anthropic default none")"
+      c.get("effort") or "default", c.get("mcp") or "none",
+      ("%g" % m) if isinstance(m, (int, float)) and not isinstance(m, bool) and m > 0 else "none")
+' "$CFG/config.json" 2>/dev/null || echo "default anthropic default none none")"
 CTO_MCP="${CTO_MCP:-none}"
 # cto.tools: the built-in tools the CTO is offered ("default" = all of them). MEASURED 2026-10-06:
 # the CTO used 7 tools in ~400 calls over six sessions (plus TaskStop once), and was offered 24,
@@ -133,7 +136,7 @@ if [ "${1:-}" = "--doctor" ]; then
   done
   echo
   echo "  git in use : $(command -v git) $(git --version | awk '{print $3}')"
-  echo "  cto model  : $MODEL, effort $EFFORT, mcp $CTO_MCP"
+  echo "  cto model  : $MODEL, effort $EFFORT, mcp $CTO_MCP, headless cap ${CTO_MAX_USD:-none}"
   echo "  cto tools  : $CTO_TOOLS${CTO_SETTINGS:+ (CLAUDE.md excluded: $CTO_SETTINGS)}"
   echo "  claude     : $(claude auth status 2>/dev/null | grep -q '"loggedIn": true' && echo 'signed in' || echo 'NOT signed in — claude auth login')"
   echo "  claude-mem : $(mem_status)"
@@ -177,6 +180,9 @@ preflight() {
     "$(git worktree list | wc -l | tr -d ' ')"
 
   echo "  memory: $(mem_status)"
+  # what card runs have cost today, against the owner's daily budget (issue #16): in the brief,
+  # so the CTO sizes the next card knowing it
+  [ -f "$HOOKS/seat.py" ] && { python3 "$HOOKS/seat.py" spend 2>/dev/null || true; }
   # commits since the standing facts were last checked (the Stop hook asks within a session; this
   # catches what a session left behind)
   [ -f "$HOOKS/memlife.py" ] && { python3 "$HOOKS/memlife.py" pending 2>/dev/null || true; }
@@ -314,9 +320,12 @@ if [ $# -gt 0 ]; then
   # denied up front, which is what the hook then answers.
   export AI_TEAMMATES_HEADLESS=1
   START="$(date -u +%Y-%m-%dT%H:%M:%S)"
+  # Nobody is watching a headless run spend: config.json cto.max_usd caps it (Claude Code stops
+  # the run itself). Before --allowedTools, which is variadic and would swallow it.
+  CAP=(); [ "${CTO_MAX_USD:-none}" != "none" ] && CAP=(--max-budget-usd "$CTO_MAX_USD")
   launch -p "$BRIEF
 
-TASK: $*" --permission-mode acceptEdits --permission-prompts none --allowedTools "$ALLOW" < /dev/null
+TASK: $*" --permission-mode acceptEdits --permission-prompts none ${CAP[@]+"${CAP[@]}"} --allowedTools "$ALLOW" < /dev/null
   rc=$?
   python3 "$HOOKS/loopguard.py" report --since "$START"
   exit $rc

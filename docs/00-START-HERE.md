@@ -95,6 +95,11 @@ routing doc once named a model that had never existed, for weeks.
 that `seat.py land` runs on the merged result every time a card lands. Two cards can each pass
 their own checks and break each other; this is where the second one is refused.
 
+**`budget`** (optional): `{"daily_usd": 20}` is what all card runs together may cost in one day
+(`0` = no daily budget). One run is bounded by its card's `budget.usd`; the default and the most a
+card may ask for are `cards.default_usd` (1) and `cards.max_usd` (5). `cto.max_usd` caps a headless
+`cto "task"`. See [04-ROUTING](04-ROUTING.md).
+
 **`delegation`**: `{"cto_product_edits": "block" | "ask" | "allow"}` decides what happens when the
 CTO itself edits product code, in any checkout: `block` (the default, also when the key is absent:
 product code arrives only through cards), `ask` you each time, or `allow`. `seat.py report --delegation` shows how much

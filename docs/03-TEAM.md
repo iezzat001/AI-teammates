@@ -103,11 +103,13 @@ The runner handles what has bitten us:
   card whose `depends_on` cards are not merged into the integration branch yet
 - gives each card its own worktree and branch off the integration branch, and
   archives (tags) an earlier unfinished attempt instead of reusing its leftovers
-- kills a run that passes its wall-time or tool-call budget, and its children
+- kills a run that passes its wall-time or tool-call budget, and its children; Claude Code
+  stops a run at the card's cost cap (`budget.usd`), which ends it `over_budget`
+- does not launch a card that could take the day's card runs over `budget.daily_usd`
 - computes the diff from git, checks it against the card's scope, **executes** the
   acceptance commands, and only then commits as `seat:<name>`
-- records status, cost, branch, files and acceptance results on the run, and moves
-  the board card
+- records status, cost, tokens, branch, files and acceptance results on the run, appends
+  the run and its cost to the card file itself (`runs`, `spent_usd`), and moves the board card
 - `seat.py land <ID>` merges a done card in a scratch worktree, re-runs its acceptance on
   the merged result, and only then moves the integration branch. A failure or a conflict
   leaves the branch as it was; a conflict is recorded for the owner, never resolved.

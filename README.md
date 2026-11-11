@@ -23,7 +23,7 @@ Built on [Claude Code](https://claude.com/claude-code). Works with any git proje
 | | |
 |---|---|
 | **`cto`** | An interactive Claude Code session that runs safety checks before you type. |
-| **Teammates** | UI, backend and security-audit agents. Each runs one task card in its own git worktree, with a time and tool budget. |
+| **Teammates** | UI, backend and security-audit agents. Each runs one task card in its own git worktree, with a time, tool and cost budget. |
 | **Guardrails** | Git and Claude Code hooks: no unreviewed product code on your main branches, teammates edit only the files their card names, and an agent that keeps hitting the same wall stops and asks you. |
 | **Proof, not promises** | A card is "done" only when its acceptance commands pass. The runner executes them; the agent's own report doesn't count. |
 | **A dashboard** | A local page with the board, branches, team, rules and every guard block, live from your repository. |
@@ -241,7 +241,12 @@ The CTO delegates through task cards. You rarely run these yourself, but this is
 python3 .ai-teammates/hooks/card.py new UI-1 --seat ui-developer --tier mechanical --title "..." --goal "..."
 python3 .ai-teammates/hooks/card.py check UI-1        # too big? it tells you to split it
 python3 .ai-teammates/hooks/seat.py run --card UI-1   # runs, checks scope, executes acceptance, commits
+python3 .ai-teammates/hooks/seat.py report --cost     # what card runs cost: per day, card and model
 ```
+
+Every card has a cost cap (`budget.usd`) that Claude Code enforces during the run, and the
+project has a daily budget (`budget.daily_usd` in `config.json`, $20 by default). Each run's cost
+is written on its card.
 
 ---
 

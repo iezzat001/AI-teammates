@@ -154,6 +154,11 @@ write it yourself.
    earlier session left unreviewed; deal with it the same way.
 3. **`seat.py run --card <ID>`.** It blocks until the seat is done, blocked or killed
    for going over budget, then prints one status line and moves the board card.
+   **The card's `budget.usd` is yours to set**: what this one run may cost. Claude Code stops
+   the run there (`over_budget`: nothing committed; split the card or pick a cheaper tier, do
+   not just raise it). The owner sets the most a card may ask for and a budget for the day; a
+   card that would go over the day's is not launched, and that ask goes to the owner. The
+   run's cost is written on the card, and your brief carries today's spend.
 4. **Read the status line; it is facts, not the seat's word.** The runner already
    *executed* the checks: the diff, whether it stayed in scope, every acceptance
    command. `done` means all of them passed. It does not mean the work is right:

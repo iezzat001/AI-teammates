@@ -68,8 +68,24 @@ bug. It does not earn it on rewording three strings. When in doubt, start one ti
 lower and let the acceptance commands tell you: a card that fails its acceptance on
 `mechanical` is a data point, not a failure of the routing.
 
-**Cost is recorded, not guessed.** Every card run stores Claude Code's own
-`total_cost_usd`; `seat.py report` sums it per seat. The harness's own prompt sets a floor per
+**Cost is recorded on the card, and capped.** Every card run stores Claude Code's own
+`total_cost_usd` and token counts, in the run log and on the card itself (`runs`, `spent_usd` in
+`.ai-teammates/cards/<ID>.json`). Three limits, each one executed:
+
+- **Per run:** the card's `budget.usd`, which the CTO sets (default $1, `cards.default_usd`). It
+  is passed to Claude Code as `--max-budget-usd`, which stops the run itself; the run then ends
+  `over_budget`, nothing is committed, and the board card says why. `card.py check` refuses a cap
+  above the owner's maximum for one run (`cards.max_usd`, $5 by default). A free-form seat run
+  (an audit) is capped at that maximum.
+- **Per day:** `budget.daily_usd` in `config.json` ($20 by default, `0` for none). The runner
+  does not launch a card that could take the day's card runs over it, and records the ask for
+  the owner. Only the owner can raise it: an agent's edit to `config.json` asks first.
+- **A headless CTO run** (`cto "task"`): `cto.max_usd`, unset by default.
+
+`seat.py report --cost` shows spend per day, card and model; `seat.py spend` is the one line the
+pre-flight puts in the CTO's brief; `seat.py report` sums per seat. On a subscription the dollar
+figures are Claude Code's estimate of what the run would cost: nothing is billed, but it is what
+counts against your plan's limit. Not counted: free-form seat runs and the CTO's own session. The harness's own prompt sets a floor per
 run, measured on a one-word reply on 2026-10-04: Haiku 4.5 $0.058, Sonnet 5.5 $0.082, Opus 5.5
 $0.163. The 5.0 models they replaced were dearer (Sonnet 5 $0.13, Opus 5 $0.21 on 2026-10-02), so
 the move to 5.5 is cheaper as well as newer. A card should be worth its floor: below it, do it
