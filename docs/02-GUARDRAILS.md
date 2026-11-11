@@ -147,7 +147,8 @@ elsewhere; it would need a branch pushed from the checkout, which is blocked.
 
 | Check | When | What it proves |
 |---|---|---|
-| `guardrail_test.py` | Every CTO session start | Seats are bound by permissions; `prepush` blocks a real commit — by **executing** it |
+| `guardrail_test.py --preflight` | Every CTO session start | This project is guarded right now: hooks registered, committed on the production branch, the same in every worktree, signed in |
+| `guardrail_test.py` (the self-test) | At a CTO start when the hooks, launcher, config, seat specs, hook registration or tool versions changed since it last passed, or after 7 days; `cto --selftest`; CI | Every guard, the card runner, setup and memory do what they say — by **executing** them in throwaway repositories (`prepush` blocks a real commit) |
 | `prepush.py` | Every push (git pre-push hook) | No unreviewed product code on a protected branch; production only via integration; a push onto production carrying commits that decide access or spend needs a filed independent review (`review.py`), however the push is spelled, and is blocked if the check cannot run |
 | `guard.py` | Claude Code `PreToolUse` | Product files are not edited in a checkout on a protected branch, judged by the checkout the file is in; changing a guardrail (the hooks, `.claude/settings*.json`, `config.json`) asks the owner, by edit or by shell; a card seat edits only its card's files and writes nothing through the shell; no seat runs `required_denies`; the CTO's own product-code edits are blocked unless `config.json` `delegation` says `ask` or `allow`; nothing changes the AI-teammates source itself |
 | `seat_status.py` | Before launching a seat | Nothing is already running — from the **process table** |

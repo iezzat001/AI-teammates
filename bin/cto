@@ -4,6 +4,7 @@
 #   cto                 interactive session — you talk, it works, you talk again
 #   cto "do the thing"  one task, headless, exits when done
 #   cto --doctor        check the environment and leave
+#   cto --selftest      run the whole guardrail suite now (about two minutes) and leave
 #   cto setup           choose memory, team and scope once after install (then runs --doctor)
 #
 # Runs from anywhere inside the project. Pre-flight happens before you type.
@@ -111,7 +112,9 @@ fi
 # `cto` is a live link to the AI-teammates repo; the hooks are the copy the
 # project installed. When they drift, cto can call hooks that are not there
 # (it skips a missing one silently) - say so instead.
-SRC_HOOKS="$(dirname "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$0")")/../core/hooks"
+CTO_BIN="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$0")"
+export AI_TEAMMATES_CTO_BIN="$CTO_BIN"      # part of what the self-test's fingerprint covers
+SRC_HOOKS="$(dirname "$CTO_BIN")/../core/hooks"
 if [ -d "$SRC_HOOKS" ]; then
   stale=0
   for f in "$SRC_HOOKS"/*.py; do cmp -s "$f" "$HOOKS/$(basename "$f")" || stale=$((stale+1)); done
@@ -143,6 +146,13 @@ if [ "${1:-}" = "--doctor" ]; then
   exit 0
 fi
 
+# --- the whole suite, on demand ---------------------------------------------
+# The pre-flight below runs the project checks at every start and the framework's self-test only
+# when something it tests has changed. This runs all of it now, whatever the last run said.
+if [ "${1:-}" = "--selftest" ]; then
+  exec python3 "$HOOKS/guardrail_test.py"
+fi
+
 # --- pre-flight ------------------------------------------------------------
 # FOUND 2026-10-03 on the first real session on the pilot project: this block printed to the TERMINAL and
 # the brief said "Pre-flight output is above" - but the model is only ever handed the brief, so
@@ -160,7 +170,10 @@ preflight() {
   [ -f "$HOOKS/seat_status.py" ] && python3 "$HOOKS/seat_status.py" || true
 
   echo
-  [ -f "$HOOKS/guardrail_test.py" ] && { python3 "$HOOKS/guardrail_test.py" || rc=1; }
+  # --preflight: the checks about this project, plus the framework's self-test only when the
+  # hooks, launcher, config, specs or tools changed since it last passed (or 7 days went by).
+  # MEASURED 2026-11-10: running all of it at every start cost ~120 s; the project checks take <1 s.
+  [ -f "$HOOKS/guardrail_test.py" ] && { python3 "$HOOKS/guardrail_test.py" --preflight || rc=1; }
 
   # Facts get VERIFIED here, not read from a doc. A CTO once synthesised an
   # ssh target by combining the ssh user from one doc with the API host from
@@ -223,15 +236,19 @@ fi
 OPEN_CARDS="$(python3 "$CFG/hooks/board.py" ls --open 2>/dev/null | sed 's/^/  /')"
 [ -n "$OPEN_CARDS" ] || OPEN_CARDS="  (board unavailable: python3 $CFG/hooks/board.py ls --open)"
 
-BRIEF="You are the CTO for this project. Before anything else, read these two and follow
-them for the whole session:
+# Small on purpose: the model re-reads it in every call of the session. cto.md carries the
+# habits and the nine failure shapes; the catalogue's cases are read when one applies, not at
+# start (2026-11: reading both in full at every start was ~3,400 words before any work).
+BRIEF="You are the CTO for this project. Before anything else, read this and follow it for
+the whole session:
 
-  $CFG/agents/cto.md          your role, powers, and the review protocol
-  $CFG/docs/07-FAILURE-CATALOGUE.md   the nine ways this project has been wrong before
+  $CFG/agents/cto.md          your role, the card workflow, the hard rules
 
 Read these when the work calls for them, not before:
+  $CFG/docs/07-FAILURE-CATALOGUE.md   the cases behind the nine failure shapes in cto.md
   $CFG/docs/02-GUARDRAILS.md  when a guard fires, or before you touch a rule
-  $CFG/docs/04-ROUTING.md     before you write a card (which tier, which model)
+  $CFG/docs/04-ROUTING.md     before you write a card (which tier, which model, what it costs)
+  $CFG/docs/05-CTO.md         why a rule in cto.md is there, when one seems wrong
 
 THE BOARD, open cards only (one card in full: python3 $CFG/hooks/board.py show <ID>;
 do not read board.json whole, most of it is closed history):
@@ -243,19 +260,7 @@ no failure, no NOT, no WARNING.
 
 $PF_SUMMARY
 
-If anything failed, fix it before new work (and ask the owner where it is theirs to decide).
-
-Three habits above all others. First: before asserting anything, ask whether the
-thing you read could physically contain the fact you are claiming - a check
-pointed at a source that cannot see the thing has been our most expensive
-failure, nine times over. Second: when you delegate, verify the result landed
-before you report it; a hung harness returns a confident report and no diff.
-Third: when something only the human can fix blocks you - an approval, a login,
-billing, sudo, a missing tool or credential, a guardrail you think is wrong -
-STOP and ask in one short message: what is blocked, what you tried (at most
-twice), the exact thing you need from them. Never route around it, and never
-edit a guardrail, hook or settings file to get past it. Seconds of the owner's
-time are cheaper than minutes of yours."
+If anything failed, fix it before new work (and ask the owner where it is theirs to decide)."
 
 echo
 echo "── CTO · $MODEL · effort $EFFORT ────────────────"

@@ -30,26 +30,33 @@ yours, not an agent's: it refuses inside an agent session, and the guard asks yo
 
 ## First session
 
-`cto` runs pre-flight before you can type:
+`cto` runs pre-flight before you can type. The first start in a project (and any start after
+the hooks, the config or the tools changed) runs the whole suite, about two minutes:
 
 ```
 ── pre-flight ──────────────────────────
   no seat running
   STATIC — is each seat bound by the thing its harness actually reads?
-  ok    ui-developer: 15 bash rules, all required denies present
+  ok    ui-developer: card seat — acceptEdits + prompts denied + allowlist + isolated ...
+  SELF-TEST — it has not passed here yet: running it now ...
   PREPUSH — does it still block product code on main?
   ok    prepush.py BLOCKED a product commit on main (executed, not grepped)
   all guardrails in force
 ── git ─────────────────────────────────
-  on main · 0 dirty · 4 worktrees
+  on development · 0 dirty · 2 worktrees
+  spend: today $0.00 of $20.00 in 0 card run(s) · last 7 days $0.00
 ```
+
+Every later start runs only the checks about this project (under a second) and says so:
+`note  self-test not re-run: its 330 checks passed on <date> for exactly these hooks, ...`.
+`cto --selftest` runs the whole suite whenever you want it.
 
 Read the last line of each block. "executed, not grepped" is the point: the
 check ran the guardrail against a real commit rather than reading its source and
 assuming.
 
-Then describe work in plain language. The CTO decides whether to do it or
-delegate it, and tells you which. On a codebase it has not seen, start with the survey in
+Then describe work in plain language. The CTO plans it, hands the product code to
+the seats as task cards, reviews what comes back, and tells you what it verified. On a codebase it has not seen, start with the survey in
 [08-NEW-PROJECT](08-NEW-PROJECT.md): it reads the code and proposes the team and scope.
 
 ---

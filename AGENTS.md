@@ -75,7 +75,7 @@ it needs no account and touches nothing of the owner's. For the dashboard:
 | `core/hooks/card.py`, `cardrun.py`, `seat.py` | Task cards, the supervised card runner, seat launches |
 | `core/hooks/loopguard.py` | Stops an agent that retries what only the owner can fix |
 | `core/hooks/memslice.py`, `memlife.py` | Memory slices for cards; keeping memory true |
-| `core/hooks/guardrail_test.py` | The test suite (runs at every `cto` start, and in CI) |
+| `core/hooks/guardrail_test.py` | The test suite: its project checks run at every `cto` start, all of it when the code changed, and in CI |
 | `core/agents/` | Seat specs and `cto.md`, the CTO's instructions |
 | `core/dashboard/` | The dashboard page |
 | `docs/` | User documentation, copied into each project |
