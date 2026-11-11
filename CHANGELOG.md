@@ -55,10 +55,21 @@ All notable changes to this project are documented here. The format follows
 
 ### Removed
 
+- The OpenCode, Codex and Ollama code paths, dead since the seats moved to Claude Code on
+  2026-09-25 (#14). `install.sh` no longer writes an `opencode.json` deny-list (one that an older
+  install left in a project is not touched: delete it if nothing of yours reads it); `cto setup`
+  no longer offers another harness and refuses one in an answers file; `bin/cto` no longer has an
+  `ollama launch` path, and a config with `cto.provider` other than `anthropic` stops with the
+  reason; `seat.py run` refuses a seat whose spec names another harness.
 - The legacy `CONTENTOS_OVERRIDE` variable; `AI_TEAMMATES_OVERRIDE` is the one override.
 
 ### Changed
 
+- The pre-flight's INHERITANCE check asks what Claude Code inherits: that the hook registration
+  (`.claude/settings.json`) and the hooks are committed on the production branch. It used to ask
+  whether `opencode.json` was. STATIC fails a seat on any harness but `claude-code`. MODELS checks
+  the Claude Code sign-in only (#14).
+- `seat_status.running_seats()` returns the list of running seats, no longer a pair.
 - The dashboard has a new dark design and an **Overview** tab: a bento grid of open work, who holds
   it, guard blocks, branch, memory, cards waiting for review, activity, team and branches, all from
   the live data. The look is inspired by the "Finance Bento" design by vasnev.art; the code is our
@@ -102,6 +113,9 @@ without its fix:
 
 ### Fixed
 
+- `scripts/test.sh` runs the suite's launcher checks against this checkout's `bin/cto`. They ran
+  whatever `cto` was already on `PATH` (a developer's installed copy), and were skipped in CI,
+  which has none: the sandbox's own `~/.local/bin` was not on `PATH` (#14).
 - After an upgrade, a bookmark to the old `/dashboard.html` answered 404. The dashboard server now
   sends it to the page at `/`, unless the folder it serves still has a `dashboard.html` of its own.
 - `memlife.py fact set` with an unchanged statement renews its date, so `audit`'s 90-day

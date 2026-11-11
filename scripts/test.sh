@@ -32,7 +32,10 @@ case "$1" in
 esac
 SH
 chmod +x "$WORK/bin/claude"
-export PATH="$WORK/bin:$PATH"
+# $HOME/.local/bin first: install.sh links `cto` there, to THIS checkout. FOUND 2026-11-10: it was
+# not on PATH, so the suite's launcher checks ran whatever `cto` the machine already had (the
+# developer's installed copy, not the code under test) and were skipped in CI, which has none.
+export PATH="$HOME/.local/bin:$WORK/bin:$PATH"
 
 proj="$WORK/project"
 mkdir -p "$proj/src"
@@ -46,6 +49,10 @@ git add -A && git commit -qm "initial"
 
 echo "── install ──"
 "$SRC/install.sh"
+# Claude Code is the only harness (docs/04-ROUTING.md). Until 2026-11 the installer also wrote an
+# OpenCode deny-list into every project and told the owner to commit it.
+if [ -e opencode.json ]; then echo "FAIL: install.sh wrote opencode.json, a file no supported harness reads"; exit 1; fi
+echo "  ok    install.sh writes nothing for a harness that is not supported"
 git add -A && git commit -qm "chore: install AI-teammates"
 # An upgrade of an installed project must change only what changed. FOUND 2026-10-28: every re-run
 # rewrote .claude/settings.json without its final newline - a diff on every upgrade of a project whose
@@ -64,6 +71,11 @@ mv .ai-teammates/agents/off/backend.md .ai-teammates/agents/ && rmdir .ai-teamma
 echo "  ok    re-running install.sh leaves a dropped seat dropped"
 git branch development
 git worktree add -q "$WORK/project-dev" development
+
+if [ "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$(command -v cto || echo /nonexistent)")" != "$SRC/bin/cto" ]; then
+  echo "FAIL: \`cto\` on PATH is not this checkout's bin/cto: the launcher checks would test other code"; exit 1
+fi
+echo "  ok    \`cto\` on PATH is this checkout's launcher"
 
 echo
 echo "── guardrail suite ──"

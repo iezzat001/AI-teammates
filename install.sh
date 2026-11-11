@@ -55,7 +55,7 @@ PY
   HOOK="$(cd "$PROJECT" && python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import _config; print(_config.hooks_dir())' "$DEST/hooks")/pre-push"
   grep -q "AI-teammates pre-push" "$HOOK" 2>/dev/null && rm "$HOOK" && echo "  git     : pre-push hook removed"
   rm -rf "$DEST" && echo "  removed : .ai-teammates/ (board, facts and config are in git history)"
-  echo "  kept    : opencode.json deny-list, and ~/.local/bin/cto (shared by other projects)"
+  echo "  kept    : ~/.local/bin/cto (shared by other projects)"
   exit 0
 fi
 
@@ -111,8 +111,6 @@ echo "  docs    : $(ls "$DEST"/docs/*.md | wc -l | tr -d ' ')"
 # --- config, preserved across upgrades -------------------------------------
 if [ ! -f "$DEST/config.json" ]; then
   # The CTO runs on Claude Code's own default model until you name one (04-ROUTING).
-  # Until 2026-10 this defaulted to an Ollama cloud model, which stopped answering on
-  # 2026-09-24: a fresh install on a machine with ollama got a CTO that could not start.
   #
   # Production is the branch this repository already ships from, not an assumption:
   # a `master` project protected as `main` would protect nothing.
@@ -133,7 +131,7 @@ if [ ! -f "$DEST/config.json" ]; then
   cat > "$DEST/config.json" <<JSON
 {
   "project": "$NAME",
-  "cto": { "harness": "claude-code", "provider": "anthropic", "model": "default" },
+  "cto": { "model": "default" },
   "protected_branches": ["$PROD", "development"],
   "guarded_paths": [$GUARDED]
 }
@@ -150,11 +148,15 @@ fi
   "agents": {}, "tasks": [] }
 JSON
 
-# --- register the hooks where each harness actually looks ------------------
-# Our code lives in .ai-teammates/, but neither harness knows that. Claude Code
-# reads .claude/settings.json and OpenCode reads opencode.json - those paths are
-# their contract, not our choice. Registering in the wrong place is how a
-# guardrail ends up passing its own self-test while protecting nothing.
+# --- register the hooks where the harness actually looks -------------------
+# Our code lives in .ai-teammates/, but Claude Code does not know that: it reads
+# .claude/settings.json. That path is its contract, not our choice. Registering
+# in the wrong place is how a guardrail ends up passing its own self-test while
+# protecting nothing.
+#
+# Until 2026-11 this also wrote an OpenCode deny-list (opencode.json). Seats left
+# OpenCode on 2026-09-25 (docs/04-ROUTING.md, History) and nothing read the file.
+# One that an older install left in a project is the project's now: not touched.
 python3 - "$PROJECT" <<'PY'
 import json, re, sys
 from pathlib import Path
@@ -189,8 +191,6 @@ def save(p, obj):
 sp = proj / ".claude" / "settings.json"
 sp.parent.mkdir(exist_ok=True)
 settings = load(sp)
-op = proj / "opencode.json"
-oc = load(op)          # parse both before writing either
 # A list, not a dict: loopguard shares PostToolUse and UserPromptSubmit with
 # activity.py. Each (event, command) is registered on its own.
 # PostToolUseFailure and PermissionRequest are where failures and approval
@@ -245,29 +245,13 @@ for event, cmd in wanted:
 save(sp, settings)
 print(f"  claude  : hooks registered in .claude/settings.json ({len(added)} added"
       + (f", {len(replaced)} duplicate(s) removed" if replaced else "") + ")")
-
-# OpenCode — the deny-list is the real boundary for a seat.
-perm = oc.setdefault("permission", {})
-bash = perm.setdefault("bash", {})
-bash.setdefault("*", "ask")
-for k in ("git push*", "wrangler*", "supabase*", "ssh*", "scp*", "rsync*",
-          "systemctl*", "curl*", "rm -rf*"):
-    bash[k] = "deny"
-edit = perm.setdefault("edit", {})
-edit.setdefault("*", "allow")
-for k in ("**/.env", "**/.env.*", ".ai-teammates/**", "**/secrets/**"):
-    edit[k] = "deny"
-perm.setdefault("external_directory", "deny")
-perm.setdefault("webfetch", "deny")
-save(op, oc)
-print("  opencode: deny-list written to opencode.json")
 PY
 
 # --- git pre-push hook -----------------------------------------------------
 # The branch rules are enforced by git itself, not by pattern-matching commands
 # inside one harness: pre-push is told where each ref really lands, fires in
-# OpenCode, Codex, scripts and your terminal alike, and lives in the common git
-# dir, so every worktree shares one copy.
+# every tool, script and terminal alike, and lives in the common git dir, so
+# every worktree shares one copy.
 HOOKS_DIR="$(cd "$PROJECT" && python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import _config; print(_config.hooks_dir())' "$DEST/hooks")"
 HOOK="$HOOKS_DIR/pre-push"
 if [ -f "$HOOK" ] && ! grep -q "AI-teammates pre-push" "$HOOK"; then
@@ -318,13 +302,13 @@ fi
 
 echo
 # The guardrails are only inherited by new worktrees if they are ON the default
-# branch. An uncommitted opencode.json protects the checkout you are standing in
-# and nothing else — guardrail_test will (correctly) fail until this is done.
+# branch. An uncommitted hook registration protects the checkout you are standing
+# in and nothing else — guardrail_test will (correctly) fail until this is done.
 # Not committed automatically: this is the user's repo, not ours.
-uncommitted="$(git -C "$PROJECT" status --porcelain -- .ai-teammates opencode.json .claude/settings.json .gitignore 2>/dev/null | wc -l | tr -d ' ')"
+uncommitted="$(git -C "$PROJECT" status --porcelain -- .ai-teammates .claude/settings.json .gitignore 2>/dev/null | wc -l | tr -d ' ')"
 if [ "$uncommitted" != "0" ]; then
   # only paths that exist: `git add` refuses the whole command over one missing pathspec
-  paths=""; for f in .ai-teammates opencode.json .claude/settings.json .gitignore; do
+  paths=""; for f in .ai-teammates .claude/settings.json .gitignore; do
     [ -e "$PROJECT/$f" ] && paths="$paths $f"
   done
   echo "  COMMIT THESE — until you do, new worktrees start unguarded:"

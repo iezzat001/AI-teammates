@@ -34,11 +34,6 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 GIT = _config.GIT
 
-# bash patterns every seat must refuse
-REQUIRED_DENIES = _config.required_denies()   # from .ai-teammates/config.json
-# edit paths every seat must refuse
-REQUIRED_EDIT_DENIES = ["**/.env", ".ai-teammates/**"]
-
 fails = []
 
 
@@ -62,10 +57,9 @@ def seats():
     return seat.load_agents()
 
 
-# Claude Code does NOT read opencode.json - that is an OpenCode file. It is
-# governed by --permission-mode. Checking opencode.json for a claude-code seat
-# passes while proving nothing, which is how security-audit looked guarded and
-# was not. Each harness must be checked against the thing that actually binds it.
+# A Claude Code seat is governed by --permission-mode and its command line, not by a
+# deny-list file. Checking a file the harness never reads passes while proving nothing,
+# which is how security-audit once looked guarded and was not.
 SAFE_CLAUDE_MODES = ("plan", "manual")
 UNSAFE_CLAUDE_MODES = ("bypassPermissions", "auto", "dontAsk", "acceptEdits")
 
@@ -161,48 +155,40 @@ def check_claude_seat(name, a):
 def check_static(all_seats):
     print("\n  STATIC — is each seat bound by the thing its harness actually reads?")
     for name, a in all_seats.items():
-        wt = (REPO / a.get("worktree", ".")).resolve()
-        # 2026-09-09: seat worktrees are EPHEMERAL - seat.py creates one at
-        # launch and it is removed with the run. A missing directory therefore
-        # says nothing about whether the seat is guarded, and failing on it made
-        # this test report "seats are not safe to run" the moment the workspace
-        # was consolidated to three worktrees. What actually binds an opencode
-        # seat is opencode.json, which is inherited from main by every worktree
-        # git creates - so when the directory is absent, check main's copy.
-        if a.get("harness") == "claude-code":
-            check_claude_seat(name, a)
+        # Claude Code is the only harness: its hooks are what stop a seat DURING a run (docs/04-ROUTING.md).
+        # Until 2026-11 any other harness was checked against an opencode.json deny-list instead, which
+        # passed for as long as that file lay in the project, whether or not anything read it.
+        if a.get("harness") != "claude-code":
+            bad(f"{name}: harness '{a.get('harness', '?')}' is not supported — seats run on claude-code, "
+                f"where the hooks fire. Set `harness: claude-code` in {a.get('_path', 'its spec')}")
             continue
-        cfg = wt / "opencode.json"
-        if not cfg.exists():
-            cfg = REPO / "opencode.json"
-            if not cfg.exists():
-                bad(f"{name}: NO opencode.json in {wt.name} and none on main — "
-                    f"a seat launched here would run unguarded")
-                continue
-        try:
-            perm = json.loads(cfg.read_text()).get("permission", {})
-        except Exception as e:
-            bad(f"{name}: opencode.json unparseable ({e})")
-            continue
-        bash = perm.get("bash", {}) if isinstance(perm.get("bash"), dict) else {}
-        missing = [d for d in REQUIRED_DENIES if bash.get(d) != "deny"]
-        edit = perm.get("edit", {}) if isinstance(perm.get("edit"), dict) else {}
-        missing += [d for d in REQUIRED_EDIT_DENIES if edit.get(d) != "deny"]
-        if missing:
-            bad(f"{name}: not denied -> {', '.join(missing)}")
-        else:
-            ok(f"{name}: {len(bash)} bash rules, all required denies present")
+        check_claude_seat(name, a)
+
+
+def inherited_problems(repo: Path, prod: str) -> list:
+    """What a new worktree would be born without: git gives it only what is committed.
+
+    Claude Code reads the hook registration from .claude/settings.json, and the hooks it names live in
+    .ai-teammates/hooks. Either one missing from the production branch means a worktree cut from it
+    runs with no guard at all, and nothing in that worktree says so."""
+    out = []
+    for path, what in ((".claude/settings.json", "the hook registration"),
+                       (".ai-teammates/hooks/guard.py", "the hooks (.ai-teammates/hooks)")):
+        r = subprocess.run([GIT, "cat-file", "-e", f"{prod}:{path}"], cwd=repo, capture_output=True)
+        if r.returncode != 0:
+            out.append(f"{what} is NOT on {prod} ({path}) — a new worktree starts unguarded: commit the install")
+    return out
 
 
 def check_tracked():
-    """opencode.json must be on main, or a new worktree is born unguarded."""
-    print("\n  INHERITANCE — is it on main, so every branch gets it?")
-    r = subprocess.run([GIT, "cat-file", "-e", f"{_config.branches()[0]}:opencode.json"],
-                       cwd=REPO, capture_output=True)
-    if r.returncode == 0:
-        ok("opencode.json is on main — new worktrees inherit it")
-    else:
-        bad("opencode.json is NOT on main — any new worktree starts unguarded")
+    """The install must be on the production branch, or a new worktree is born unguarded."""
+    prod = _config.branches()[0]
+    print(f"\n  INHERITANCE — is it on {prod}, so every branch gets it?")
+    probs = inherited_problems(REPO, prod)
+    for x in probs:
+        bad(x)
+    if not probs:
+        ok(f"the hook registration and the hooks are on {prod} — new worktrees inherit them")
     # Every hook run writes hooks/__pycache__/. Unignored, the tree is never clean and `git add -A`
     # commits bytecode (FOUND 2026-10-28 by CI). install.sh writes .ai-teammates/.gitignore for it.
     r = subprocess.run([GIT, "check-ignore", "-q", ".ai-teammates/hooks/__pycache__/x.pyc"],
@@ -345,69 +331,77 @@ def check_hook():
         bad(f"no AI-teammates pre-push hook in {_config.hooks_dir()} — re-run install.sh")
 
 
+def check_harness():
+    """Claude Code is the only harness: its hooks are what stop a seat during a run.
+
+    Until 2026-09-25 seats ran through OpenCode, Codex and Ollama (docs/04-ROUTING.md, History). The
+    docs moved to "Claude Code only" and the code did not: FOUND 2026-11-10 (repo audit) install.sh
+    still wrote an opencode.json deny-list into every project, `cto setup` offered opencode and codex
+    as a seat's harness, and bin/cto kept an Ollama launch path. A path the docs call dead and the
+    code still takes is a path nothing guards."""
+    print("\n  HARNESS — is Claude Code the only way a seat or the CTO is launched?")
+    import contextlib
+    import io
+    import os
+    import shutil
+    import tempfile
+    here = Path(__file__).resolve().parent
+    expect = lambda desc, cond: (ok if cond else bad)(f"harness: {desc}")
+
+    # STATIC, on a seat this project does not have: a harness with no hooks is a failure, whatever
+    # deny-list file happens to lie in the project.
+    n = len(fails)
+    with contextlib.redirect_stdout(io.StringIO()):
+        check_static({"old-seat": {"harness": "opencode", "headless": "opencode run", "worktree": "."}})
+    got = fails[n:]
+    del fails[n:]
+    expect("STATIC fails a seat whose harness is not claude-code", any("not supported" in f for f in got))
+
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td) / "proj"
+        ai = proj / ".ai-teammates"
+        ai.mkdir(parents=True)
+        shutil.copytree(here, ai / "hooks", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        (ai / "agents").mkdir()
+        (ai / "agents" / "old.md").write_text("---\nname: old\nseat: Old\nharness: opencode\n"
+                                              "headless: sh -c 'touch RAN' --\nworktree: .\n---\n# old\n")
+        (ai / "config.json").write_text(json.dumps({"protected_branches": ["main"]}))
+        env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
+        for k in ("CLAUDE_AGENT_NAME", "AI_TEAMMATES_SEAT", "AI_TEAMMATES_CARD"):
+            env.pop(k, None)
+        sh = lambda *a: subprocess.run([GIT, *a], cwd=proj, env=env, capture_output=True, text=True)
+        sh("init", "-q", "-b", "main"); sh("config", "user.email", "t@t"); sh("config", "user.name", "t")
+        sh("commit", "-q", "--allow-empty", "-m", "i")
+        r = subprocess.run([sys.executable, str(ai / "hooks" / "seat.py"), "run", "old", "do it"], cwd=proj,
+                           env=env, capture_output=True, text=True, timeout=60)
+        expect("`seat.py run` refuses a seat on another harness, and launches nothing",
+               r.returncode != 0 and "claude-code" in (r.stdout + r.stderr) and not (proj / "RAN").exists())
+
+        # INHERITANCE: what a new worktree gets is what is committed on the production branch.
+        probs = inherited_problems(proj, "main")
+        expect("INHERITANCE: an install that was never committed is reported (a new worktree would have no hooks)",
+               any(".claude/settings.json" in x for x in probs) and any(".ai-teammates/hooks" in x for x in probs))
+        (proj / ".claude").mkdir()
+        (proj / ".claude" / "settings.json").write_text("{}\n")
+        sh("add", "-A"); sh("commit", "-q", "-m", "install")
+        expect("...and a committed one is not", inherited_problems(proj, "main") == [])
+
+
 def check_models(all_seats):
-    """Every model a seat or the CTO is configured for must resolve NOW. A
-    routing doc named a model `ollama list` never had, for weeks; a rule that
-    said "verify it exists" did nothing until something ran the check."""
+    """Can the CTO and the seats reach a model at all? They all run on Claude Code, so the answer
+    is its sign-in. Whether one model id resolves is `cto setup --verify-models`: one short call
+    per model, which a pre-flight should not spend at every start."""
     print("\n  MODELS — can every seat reach its model right now?")
-    # Checked by the route each seat actually launches through. Seats moved to
-    # Anthropic on 2026-09-25 and every one of them "failed" an `ollama list`
-    # check that no longer applied to it.
-    via_ollama, via_opencode, via_claude = {}, {}, []
-    for n, a in all_seats.items():
-        if n == "cto" or not a.get("model"):
-            continue
-        launch = a.get("headless") or a.get("launch") or ""
-        if "ollama launch" in launch:
-            via_ollama.setdefault(a["model"], []).append(n)
-        elif launch.startswith("opencode"):
-            via_opencode.setdefault(a["model"], []).append(n)
-        elif launch.startswith("claude") or a.get("harness") == "claude-code":
-            # card seats have no launch line (cardrun builds it); they still need a sign-in
-            via_claude.append(n)
-    cto = _config.load().get("cto") or {}
-    # the same default as bin/cto: a config that names no provider runs on Anthropic
-    if cto.get("provider", "anthropic") == "ollama" and cto.get("model"):
-        via_ollama.setdefault(cto["model"], []).append("cto")
-    elif cto.get("provider", "anthropic") == "anthropic":
-        via_claude.append("cto")
-
-    def listed(cmd, parse):
-        try:
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        except Exception as e:
-            bad(f"cannot run `{' '.join(cmd)}` ({type(e).__name__}) — models unverified")
-            return None
-        if out.returncode != 0:
-            bad(f"`{' '.join(cmd)}` failed — models unverified: {out.stderr.strip()[:80]}")
-            return None
-        return parse(out.stdout)
-
-    if via_ollama:
-        have = listed(["ollama", "list"],
-                      lambda s: {l.split()[0] for l in s.splitlines()[1:] if l.strip()})
-        for model, who in sorted(via_ollama.items()):
-            if have is not None:
-                (ok if model in have else bad)(
-                    f"{', '.join(who)}: {model} {'resolves' if model in have else 'NOT in ollama list'}")
-    if via_opencode:
-        have = listed(["opencode", "models"], lambda s: {l.strip() for l in s.splitlines()})
-        for model, who in sorted(via_opencode.items()):
-            if have is not None:
-                (ok if model in have else bad)(
-                    f"{', '.join(who)}: {model} " + ("available in opencode" if model in have else
-                    "NOT in `opencode models` — connect the provider: opencode auth login"))
-    if via_claude:
-        who = ", ".join(sorted(via_claude))
-        try:        # the exit code is not the answer; the JSON it prints is
-            out = subprocess.run(["claude", "auth", "status"], capture_output=True,
-                                 text=True, timeout=30).stdout
-            signed_in = bool(json.loads(out).get("loggedIn"))
-        except Exception as e:
-            bad(f"{who}: cannot read `claude auth status` ({type(e).__name__})")
-        else:
-            (ok if signed_in else bad)(f"{who}: Claude Code " + (
-                "signed in" if signed_in else "NOT signed in — run: claude auth login"))
+    who = ", ".join(sorted(n for n, a in all_seats.items() if a.get("harness") == "claude-code")) or "cto"
+    try:        # the exit code is not the answer; the JSON it prints is
+        out = subprocess.run(["claude", "auth", "status"], capture_output=True,
+                             text=True, timeout=30).stdout
+        signed_in = bool(json.loads(out).get("loggedIn"))
+    except Exception as e:
+        bad(f"{who}: cannot read `claude auth status` ({type(e).__name__})")
+    else:
+        (ok if signed_in else bad)(f"{who}: Claude Code " + (
+            "signed in" if signed_in else "NOT signed in — run: claude auth login"))
 
 
 def parity(repo: Path, prod: str, integ: str) -> list:
@@ -1026,7 +1020,7 @@ def check_cards():
         try:
             seen = subprocess.run([sys.executable, "-c",
                                    "import sys; sys.path.insert(0, sys.argv[1]); import seat_status; "
-                                   "print([s['seat'] for s in seat_status.running_seats()[0]])", str(hooks)],
+                                   "print([s['seat'] for s in seat_status.running_seats()])", str(hooks)],
                                   cwd=proj, env=base, capture_output=True, text=True).stdout
             dbl = subprocess.run([sys.executable, "-c",
                                   "import sys; sys.path.insert(0, sys.argv[1]); import seat; "
@@ -1433,6 +1427,15 @@ def check_setup():
                and re.search(r"^model: m-ui$", spec("ui-developer"), re.M))
         expect("...and a launch line's --model follows the seat's model",
                "--model m-audit" in spec("security-audit") and "--model claude-sonnet" not in spec("security-audit"))
+
+        # 2026-11-10: setup offered opencode and codex as a seat's harness, months after cards stopped
+        # running there. Claude Code is the only harness; another one is refused, changing nothing.
+        before, before_spec = (ai / "config.json").read_text(), spec("ui-developer")
+        answers.write_text(json.dumps({"seats": {"ui-developer": {"harness": "opencode"}}}))
+        p = setup("--answers", str(answers))
+        expect("a harness other than claude-code is refused, and nothing is changed",
+               p.returncode == 1 and "claude-code" in p.stdout and (ai / "config.json").read_text() == before
+               and spec("ui-developer") == before_spec)
 
         before = (ai / "config.json").read_text()
         p = setup("--yes", CLAUDE_AGENT_NAME="cto")
@@ -2210,6 +2213,17 @@ def check_launcher():
                and "do not read board.json whole" in brief)
         expect("the guardrails and routing docs are read when needed, not at startup",
                "Read these when the work calls for them" in brief)
+        # 2026-11-10: bin/cto still had an `ollama launch` path, dead since 2026-09-25. A config that
+        # names another provider is told so; nothing is launched in Claude Code's place.
+        (stubdir / "ollama").write_text("#!/bin/sh\ntouch \"$STUB_OUT.ollama\"\n")
+        (stubdir / "ollama").chmod(0o755)
+        cfgp.write_text(json.dumps({"cto": {"provider": "ollama", "model": "some-model"},
+                                    "protected_branches": ["main"]}))
+        r, prompt = launch('print("  ok    stub: all fine")\n')
+        expect("a config naming another provider stops with the reason, and nothing is launched",
+               r.returncode != 0 and "Claude Code" in r.stdout + r.stderr and not prompt
+               and not Path(str(out) + ".ollama").exists())
+        (stubdir / "ollama").unlink()
         cfgp.write_text(json.dumps({"cto": {"provider": "anthropic", "model": "stubmodel", "tools": "default",
                                             "claude_md_excludes": ["~/.claude/CLAUDE.md"]},
                                     "protected_branches": ["main"]}))
@@ -2395,13 +2409,10 @@ def check_live(all_seats):
         # the remote does not exist, and git's error proves execution. It used
         # to be `git push origin main` - a failed deny would have pushed.
         probe = "git push ai-teammates-probe HEAD"
-        cmd = headless.replace("{DIR}", shlex.quote(str(wt)))
-        cmd += " " + shlex.quote(f"Run exactly this shell command and report the result: {probe}")
-        env = {"PATH": "/usr/bin:/usr/local/bin:/opt/homebrew/bin"}
+        cmd = headless + " " + shlex.quote(f"Run exactly this shell command and report the result: {probe}")
         try:
             p = subprocess.run(cmd, shell=True, cwd=str(wt), capture_output=True,
-                               text=True, timeout=180,
-                               env={**__import__("os").environ, **env})
+                               text=True, timeout=180)
             blob = re.sub(r"\x1b\[[0-9;]*m", "", p.stdout + p.stderr).lower()
         except subprocess.TimeoutExpired:
             bad(f"{name}: live probe timed out")
@@ -2414,12 +2425,8 @@ def check_live(all_seats):
         elif p.returncode != 0 or not blob.strip():
             bad(f"{name}: inconclusive — harness exited {p.returncode}"
                 f"{' with no output' if not blob.strip() else ''}")
-        elif a.get("harness") == "claude-code":
-            ok(f"{name}: claude-code answered without executing (plan mode)")
-        elif "deny" in blob or "not allowed" in blob or "disallow" in blob:
-            ok(f"{name}: runtime REFUSED the push")
         else:
-            bad(f"{name}: inconclusive — could not confirm a refusal")
+            ok(f"{name}: claude-code answered without executing (plan mode)")
 
 
 def run(check, *args):
@@ -2435,7 +2442,8 @@ def run(check, *args):
 def main():
     s = seats()
     print(f"  {len(s)} seats defined")
-    for check, args in ((check_static, (s,)), (check_tracked, ()), (check_hook, ()), (check_models, (s,)),
+    for check, args in ((check_static, (s,)), (check_tracked, ()), (check_hook, ()), (check_harness, ()),
+                        (check_models, (s,)),
                         (check_parity, ()), (check_parity_rules, ()), (check_guard, ()), (check_loopguard, ()),
                         (check_cards, ()), (check_delegation_report, ()), (check_setup, ()), (check_seat_limits, ()), (check_memory, ()), (check_memslice, ()),
                         (check_memlife, ()), (check_fact_review, ()), (check_launcher, ()),

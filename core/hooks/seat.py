@@ -15,11 +15,9 @@ Two things this exists to answer:
   1. What did each seat consume?
   2. Did it stay inside its guardrails?
 
-On (1), be honest about the limit: Ollama exposes no local usage or credits API
-(/api/usage and /api/account both 404). So we record what is measurable here —
-wall time, tool calls, files touched, model — and treat ollama.com as the
-authority for currency. Wall time on a fixed model is a usable proxy for spend
-and it is real; an invented token count would not be.
+On (1): a card run records what Claude Code itself reports (total_cost_usd, turns)
+next to what is measured here: wall time, tool calls, files touched, model. A
+free-form run records the measured part only.
 
 On (2), guard.py already writes every block to events.jsonl. Setting
 CLAUDE_AGENT_NAME before launching is what makes those blocks attributable to a
@@ -117,7 +115,7 @@ def assert_not_running(name):
         mine.add(pid)
         pid = subprocess.run(["ps", "-o", "ppid=", "-p", pid],
                              capture_output=True, text=True).stdout.strip()
-    live = [s for s in seat_status.running_seats()[0]
+    live = [s for s in seat_status.running_seats()
             if s["seat"] == name and s["pid"] not in mine]
     if live:
         sys.exit(f"seat '{name}' is already running (pid {live[0]['pid']}, "
@@ -129,18 +127,18 @@ def cmd_run(agents, name, task):
     if not a:
         sys.exit(f"unknown seat '{name}'. try: {', '.join(agents) or 'none'}")
 
+    # Claude Code only: its hooks are what attribute, limit and stop a seat during the run.
+    # Until 2026-11 any spec's command line was launched here, whatever harness it named.
+    if a.get("harness") != "claude-code":
+        sys.exit(f"seat '{name}' runs on '{a.get('harness', '?')}'. Seats run on claude-code only: set "
+                 f"`harness: claude-code` and a `claude ...` headless command in {a.get('_path', 'its spec')}.")
+
     assert_not_running(name)
 
-    # Headless is the default for delegated work: `opencode run "<task>"` behind
-    # an `--` separator, which is what ollama launch needs to pass args through.
-    # The model tag must carry :cloud -- without it ollama tries to resolve a
-    # LOCAL model and offers to pull 18GB, which breaks the no-local-models rule.
+    # Headless is the default for delegated work: the spec's `claude -p ...` line with the task
+    # appended as its prompt.
     headless = a.get("headless")
     if headless and os.environ.get("SEAT_INTERACTIVE") != "1":
-        # {DIR} is substituted below. opencode does NOT inherit the parent
-        # process cwd - measured, not assumed: without --dir it wrote PROOF.txt
-        # into the main repo while running with cwd set to a scratch dir. That
-        # single defect is why earlier delegated runs looked like no-ops.
         # shlex.quote, not json.dumps: JSON quoting is shell double-quoting,
         # so every `code span` in a markdown brief was executed by the shell.
         launch = f'{headless} {shlex.quote(task)}'
@@ -166,27 +164,11 @@ def cmd_run(agents, name, task):
     env = dict(os.environ)
     env["CLAUDE_AGENT_NAME"] = name          # <- makes hooks attribute to this seat
     env["AI_TEAMMATES_SEAT"] = a.get("seat", name)
-    # Claude Code does not recognise Ollama model names and assumes a 200k
-    # window. The spec's context_window was documented as "exported" and never
-    # was - so the audit seat ran truncated. Now it is.
-    if a.get("harness") == "claude-code" and a.get("context_window"):
-        env["CLAUDE_CODE_MAX_CONTEXT_TOKENS"] = a["context_window"]
-
-    # /usr/local/bin/git is a 2021 standalone install (2.19.0) that shadows
-    # Apple's 2.50.1 in /usr/bin. OpenCode snapshots files before every edit
-    # with `git add --sparse`, which landed in git 2.25 - against 2.19 it fails
-    # with "unknown option `sparse'" and the run stalls. 247 such failures were
-    # sitting in the opencode log. Put /usr/bin first for the seat only; fixing
-    # it system-wide means removing a root-owned symlink, which is the human's call.
+    # /usr/local/bin/git has been a 2021 standalone install (2.19.0) shadowing
+    # Apple's 2.50.1 in /usr/bin: `--sparse` and worktrees need 2.25, and 247
+    # failures sat in a harness log before anyone noticed. /usr/bin first, for
+    # the seat only; fixing it system-wide is the human's call.
     env["PATH"] = "/usr/bin:" + env.get("PATH", "")
-
-    # `ollama launch claude` routes Claude Code at an Ollama-hosted model. If
-    # ANTHROPIC_API_KEY is set it takes precedence, so the seat would quietly
-    # run on Anthropic instead - wrong model, and it spends Anthropic credit
-    # while the run reports success. Strip it for seats on the ollama path.
-    if "ollama launch" in launch:
-        env.pop("ANTHROPIC_API_KEY", None)
-        env.pop("ANTHROPIC_AUTH_TOKEN", None)
 
     # Bring the worktree up to date with BASE before launching. Twice now a
     # seat has been handed a spec that did not exist in its checkout: the
@@ -206,19 +188,12 @@ def cmd_run(agents, name, task):
             print(f"  WARNING  {wt.name} is {n} commits behind {BASE} and could not "
                   f"fast-forward. The seat may not see recent specs.")
 
-    launch = launch.replace("{DIR}", shlex.quote(str(wt)))
-
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     t0 = time.time()
     print(f"  seat    {a.get('seat')}\n  model   {a.get('model')}\n"
           f"  cwd     {wt}\n  task    {task}\n")
 
-    # Stream to the terminal AND keep a copy: opencode and codex do not write
-    # to events.jsonl (that is an activity.py hook, and only Claude Code fires
-    # hooks). Counting from events.jsonl alone reported tool_calls=0 for a run
-    # that plainly did work - the same defect class as matching kind=="block"
-    # when guard emits "blocked": a monitor pointed at the wrong source reports
-    # zero forever and looks healthy doing it.
+    # Stream to the terminal AND keep a copy (scrubbed, in the state dir).
     proc = subprocess.Popen(launch, shell=True, cwd=str(wt), env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, bufsize=1)
@@ -230,18 +205,8 @@ def cmd_run(agents, name, task):
     elapsed = round(time.time() - t0, 1)
     out = "".join(captured)
 
-    # Strip ANSI FIRST. The marker is preceded by a colour escape, so "^\s*"
-    # never reached it and every run recorded tool_calls=0 while an 85KB log
-    # sat on disk showing 66 tool lines. Third time a counter has been pointed
-    # at something it could not see.
-    plain = re.sub(r"\x1b\[[0-9;]*m", "", out)
+    # Tool calls and guard hits come from events.jsonl, which the hooks write during the run.
     blocks, tools, overrides, warns = events_for(name, started)
-    if tools == 0:
-        tools = len(re.findall(r"^\s*(?:→|✱|\$)\s", plain, re.M))
-    # opencode reports a refused action in its own output, not to our log
-    for m in re.finditer(r'permission[^\n]*?"([^"]+)"[^\n]*?disallow|'
-                         r'deny rule for `([^`]+)`', plain, re.I):
-        blocks.append(next(g for g in m.groups() if g))
     # Scrubbed: raw harness output echoes whatever the tools printed, and this
     # file used to be the one log that skipped activity.py's secret scrubber.
     from activity import scrub
@@ -297,7 +262,7 @@ def cmd_report():
               f"{a['clean']}/{a['runs']:>3} {a['cost']:>8.3f}")
     print("\n  clean = a card run that ended `done`: a diff inside scope AND every acceptance")
     print("  command passing. Older runs: exit 0 and no guard hit. usd: Claude Code's own")
-    print("  total_cost_usd; absent for runs on other harnesses.")
+    print("  total_cost_usd; absent for free-form runs.")
 
 
 def cmd_delegation(days: int):
