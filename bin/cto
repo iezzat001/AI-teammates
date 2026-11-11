@@ -5,7 +5,8 @@
 #   cto "do the thing"  one task, headless, exits when done
 #   cto --doctor        check the environment and leave
 #   cto --selftest      run the whole guardrail suite now (about two minutes) and leave
-#   cto setup           choose memory, team and scope once after install (then runs --doctor)
+#   cto setup           the tool and plan, memory, team, scope and spend; then the workspace: it
+#                       commits the install and creates the integration checkout (then --doctor)
 #
 # Runs from anywhere inside the project. Pre-flight happens before you type.
 
@@ -39,7 +40,8 @@ if [ -n "${INT_BR:-}" ] && [ "$(git rev-parse --abbrev-ref HEAD)" = "${PROD_BR:-
     echo "  cto: $(basename "$REPO") is on $PROD_BR — switching to the $INT_BR checkout: $WT"
     cd "$WT" && exec "$0" "$@"
   fi
-  echo "  cto: on $PROD_BR and no $INT_BR worktree exists. Create one first:"
+  echo "  cto: on $PROD_BR and no checkout of $INT_BR exists. The CTO works there, never on $PROD_BR."
+  echo "       cto setup      creates it (and the branch), after asking; or by hand:"
   git rev-parse --verify --quiet "refs/heads/$INT_BR" >/dev/null || echo "       git branch $INT_BR $PROD_BR"
   echo "       git worktree add ../$(basename "$REPO")-dev $INT_BR"
   echo "       cd ../$(basename "$REPO")-dev && cto"

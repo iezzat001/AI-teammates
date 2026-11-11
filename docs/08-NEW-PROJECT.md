@@ -1,7 +1,13 @@
 # Bootstrapping an unfamiliar project
 
-The CTO's first session on a new codebase. This is the least proven part of the
-system — treat it as a procedure under test, not a solved problem.
+The CTO's first sessions on a new codebase.
+
+**Before session 1, the mechanical part is one command** (2026-11, #18):
+`/path/to/AI-teammates/install.sh <project>` installs, asks the setup's questions, commits the
+install and creates the `development` checkout the CTO works in. `scripts/test.sh` runs exactly
+that path at every change. What follows is the part no command can do: understanding the
+project. It is still the least proven part of the system — treat it as a procedure under test,
+not a solved problem.
 
 ---
 

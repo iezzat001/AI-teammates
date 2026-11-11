@@ -48,7 +48,10 @@ echo "# test project" > README.md
 git add -A && git commit -qm "initial"
 
 echo "── install ──"
-"$SRC/install.sh"
+# Pointed at the project from somewhere else, as a new user does it: `install.sh <project>`.
+# Until 2026-11 it only worked from inside the project. No terminal and no setup options here,
+# so setup does not run yet (it does further down).
+(cd "$WORK" && "$SRC/install.sh" "$proj")
 # Claude Code is the only harness (docs/04-ROUTING.md). Until 2026-11 the installer also wrote an
 # OpenCode deny-list into every project and told the owner to commit it.
 if [ -e opencode.json ]; then echo "FAIL: install.sh wrote opencode.json, a file no supported harness reads"; exit 1; fi
@@ -74,8 +77,13 @@ mkdir -p .ai-teammates/agents/off && mv .ai-teammates/agents/backend.md .ai-team
 if [ -e .ai-teammates/agents/backend.md ]; then echo "FAIL: re-running install.sh brought back a dropped seat"; exit 1; fi
 mv .ai-teammates/agents/off/backend.md .ai-teammates/agents/ && rmdir .ai-teammates/agents/off
 echo "  ok    re-running install.sh leaves a dropped seat dropped"
-git branch development
-git worktree add -q "$WORK/project-dev" development
+# The rest of the way, as a new user gets there: setup with every default. It commits what is
+# left, creates the integration branch and its checkout beside the project, and deletes nothing.
+(cd "$WORK" && "$SRC/install.sh" "$proj" --yes --no-doctor) > "$WORK/setup.log" 2>&1 || { cat "$WORK/setup.log"; echo "FAIL: install.sh <project> --yes failed"; exit 1; }
+if [ "$(git -C "$WORK/project-dev" rev-parse --abbrev-ref HEAD 2>/dev/null)" != "development" ] || [ -n "$(git status --porcelain)" ]; then
+  cat "$WORK/setup.log"; echo "FAIL: install.sh <project> --yes did not leave a committed install and a development checkout at ../project-dev"; exit 1
+fi
+echo "  ok    install.sh <project> --yes: install, setup, a committed install and the integration checkout"
 
 if [ "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$(command -v cto || echo /nonexistent)")" != "$SRC/bin/cto" ]; then
   echo "FAIL: \`cto\` on PATH is not this checkout's bin/cto: the launcher checks would test other code"; exit 1

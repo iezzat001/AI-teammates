@@ -320,6 +320,10 @@ def cmd_cost(days: int):
     table("per card", lambda r: r.get("card"))
     table("per model", lambda r: r.get("model") or "?")
     print(f"\n  {'total':<28} {len(rows):>5} {sum(r.get('cost_usd') or 0 for r in rows):>9.3f}")
+    billing = (_config.load().get("cto") or {}).get("billing")
+    print("  " + ("API billing: these dollars are billed." if billing == "api" else
+                  "On a subscription these are Claude Code's estimates: nothing is billed, but it is what "
+                  "counts against your plan's limit."))
     print("  tokens in counts cached input too. Free-form seat runs and the CTO's own session are not in here.")
 
 
