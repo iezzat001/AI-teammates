@@ -60,7 +60,7 @@ core/hooks/               every hook and CLI (Python, standard library only)
   card.py, cardrun.py     task cards and the supervised card runner
   seat.py                 launches teammates
   memslice.py, memlife.py memory slices for cards, and keeping memory true
-  guardrail_test.py       the test suite (runs at every `cto` start, and in CI)
+  guardrail_test.py       the test suite (project checks at every `cto` start, all of it when the code changed, and in CI)
 core/agents/              teammate specs (copied into a project once; cto.md is updated on upgrade)
 core/dashboard/           the dashboard page, served by hooks/dashboard_server.py
 docs/                     user documentation (copied into each project)

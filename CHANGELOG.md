@@ -74,6 +74,18 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 
+- **`cto` starts in seconds, not minutes (#17).** The pre-flight ran the whole guardrail suite at
+  every start: about 120 seconds, measured, of which under one second checks the project. It now
+  runs the project checks every time (`guardrail_test.py --preflight`) and the framework's
+  self-test only when the installed hooks, the launcher, `config.json`, a seat spec, the hook
+  registration or the versions of python, git or claude changed since it last **passed**, or after
+  7 days. A failed self-test is never recorded as passed. The pre-flight says which happened on a
+  line the CTO's brief keeps. `cto --selftest` runs all of it; `guardrail_test.py` with no flag
+  still does (CI, `scripts/test.sh`); `--project` runs only the project checks.
+- **A smaller start for the CTO (#17).** `cto.md` is 1,200 words (it was 2,400) and carries the
+  nine failure shapes in one line each; the brief no longer has the whole failure catalogue
+  (1,050 words) read at start and no longer repeats the habits. The reasons and the pilot's
+  history moved to `docs/05-CTO.md`. The suite holds word limits for both.
 - **Delegation is the default (#15).** `delegation.cto_product_edits` is `block` when it is not
   set: the CTO's own edits to product code are refused, with the edit tools and through the shell,
   and it is told to write a card. It was `allow`, and no installer set it. **An upgraded project

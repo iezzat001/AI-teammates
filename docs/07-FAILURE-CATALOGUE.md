@@ -4,8 +4,11 @@ Nine shapes. Each one recurred — that is why it is here. A failure that
 happened once is bad luck; a failure that happened three times is a missing
 guardrail.
 
-The CTO reads this file at the start of every session. Not as history — as a
-list of the specific ways it is about to be wrong.
+`cto.md`, which the CTO reads at the start of every session, carries the nine shapes in one
+line each. This file has the cases behind them: read it when one applies. Not as history — as
+the specific ways the next statement is about to be wrong.
+
+*SUPERSEDED 2026-11: the CTO used to read this whole file at every start.*
 
 ---
 

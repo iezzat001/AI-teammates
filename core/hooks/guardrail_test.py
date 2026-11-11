@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
 """Are the guardrails in force RIGHT NOW? Assert it, don't assume it.
 
-    python3 .ai-teammates/hooks/guardrail_test.py          # static, free, seconds
-    python3 .ai-teammates/hooks/guardrail_test.py --live   # actually try a denied command
+    python3 .ai-teammates/hooks/guardrail_test.py              # everything: about two minutes (CI, `cto --selftest`)
+    python3 .ai-teammates/hooks/guardrail_test.py --project    # only the checks about THIS project: under a second
+    python3 .ai-teammates/hooks/guardrail_test.py --preflight  # --project, plus the self-test when it is due (`cto`)
+    python3 .ai-teammates/hooks/guardrail_test.py --live       # also try a denied command on each seat
+
+Two kinds of check live here. The PROJECT checks ask whether this project is guarded right now
+(hooks registered, committed, the same in every worktree, signed in). The SELF-TEST executes the
+hook code itself in throwaway repositories. Its answer cannot change while that code, the
+launcher, the config, the seat specs, the hook registration and the tools are the same as when it
+last passed, so `--preflight` skips it exactly then (fingerprint / selftest_due below). MEASURED
+2026-11-10: `cto` ran all of it at every start, ~120 s, of which the project checks are under 1 s.
 
 Four guardrails have silently stopped applying after being verified once:
 
@@ -35,6 +44,7 @@ REPO = Path(__file__).resolve().parents[2]
 GIT = _config.GIT
 
 fails = []
+passes = [0]
 
 
 def bad(msg):
@@ -43,12 +53,80 @@ def bad(msg):
 
 
 def ok(msg):
+    passes[0] += 1
     print(f"  ok    {msg}")
 
 
 def note(msg):
     """True and worth knowing, not a hole: printed (so the CTO's brief carries it), never counted."""
     print(f"  note  {msg}")
+
+
+# --- when the self-test is due ----------------------------------------------------------------
+STAMP = _config.state_dir() / "selftest.json"
+SELFTEST_MAX_AGE = 7 * 86400    # the machine around the code changes too (a tool upgraded in place, a full disk)
+
+
+def tool_versions() -> str:
+    out = [sys.version.split()[0]]
+    for cmd in ([GIT, "--version"], ["claude", "--version"]):
+        try:
+            out.append(subprocess.run(cmd, capture_output=True, text=True, timeout=20).stdout.strip() or "?")
+        except Exception:
+            out.append("?")
+    return " | ".join(out)
+
+
+def fingerprint(repo: Path, versions: str = None) -> str:
+    """One hash over everything the self-test's answer depends on: the installed hooks (this file
+    among them), the launcher that started us, config.json, the seat specs, the hook registration,
+    and the versions of python, git and claude. Product code is not in it: no check here reads it."""
+    import hashlib
+    import os
+    ai = repo / ".ai-teammates"
+    files = sorted((ai / "hooks").glob("*.py")) + sorted((ai / "agents").glob("*.md")) \
+        + [ai / "config.json", repo / ".claude" / "settings.json"]
+    launcher = os.environ.get("AI_TEAMMATES_CTO_BIN")
+    if launcher:
+        files.append(Path(launcher))
+    h = hashlib.sha256((versions if versions is not None else tool_versions()).encode())
+    for f in files:
+        h.update(f.name.encode() + b"\0")
+        try:
+            h.update(f.read_bytes())
+        except OSError:
+            h.update(b"(missing)")
+    return h.hexdigest()
+
+
+def selftest_due(stamp: Path, fp: str, now: float) -> tuple:
+    """(due, why). Due unless a PASSING run is recorded for exactly this fingerprint, recently.
+    Anything unreadable is due: a guard that cannot decide runs the check."""
+    import time
+    try:
+        rec = json.loads(stamp.read_text())
+        at, n = float(rec["at"]), int(rec["passed"])
+    except Exception:
+        return True, "it has not passed here yet"
+    if rec.get("fingerprint") != fp:
+        return True, "the hooks, launcher, config, seat specs or tools changed since it last passed"
+    if now - at > SELFTEST_MAX_AGE:
+        return True, "it last passed more than 7 days ago"
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(at))
+    return False, f"its {n} checks passed on {when} for exactly these hooks, launcher, config, seat specs and tools"
+
+
+def finish_selftest(stamp: Path, fp: str, failures: int, passed: int, now: float = None) -> None:
+    """Record a self-test that PASSED. A failed one leaves no record, so it runs again next time."""
+    import time
+    if failures:
+        return
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(json.dumps({"fingerprint": fp, "at": now if now is not None else time.time(),
+                                     "passed": passed}) + "\n")
+    except OSError:
+        pass                    # not recorded = it simply runs again
 
 
 def seats():
@@ -2369,6 +2447,37 @@ def check_launcher():
         expect("cto.claude_md_excludes leaves that CLAUDE.md out, home expanded (--settings claudeMdExcludes)",
                json.loads(sj).get("claudeMdExcludes") == [os.path.expanduser("~/.claude/CLAUDE.md")])
 
+        # START (issue #17). MEASURED 2026-11-10: `cto` ran this whole suite at every start, ~120 s,
+        # of which under 1 s checks the project; and the brief had the CTO read cto.md (2,362 words)
+        # and the failure catalogue (1,054) before any work.
+        argv_log = Path(td) / "gt_argv.txt"
+        spy = ('import sys\nopen(%r, "a").write(" ".join(sys.argv[1:]) + "\\n")\n'
+               'print("  ok    stub: all fine")\n' % str(argv_log))
+        r, prompt = launch(spy)
+        expect("the pre-flight runs the suite in --preflight mode (project checks; the self-test only when due)",
+               argv_log.read_text().split() == ["--preflight"])
+        argv_log.write_text("")
+        (hk / "guardrail_test.py").write_text(spy)
+        out.unlink(missing_ok=True)
+        r = subprocess.run(["bash", str(cto), "--selftest"], cwd=proj, env=env, capture_output=True, text=True, timeout=180)
+        expect("`cto --selftest` runs the whole suite now and leaves, launching nothing",
+               argv_log.read_text().strip() == "" and "stub: all fine" in r.stdout and not out.exists())
+        r, prompt = launch('print("  ok    stub: all fine")\n')
+        first = prompt.split("Read these when the work calls for them", 1)[0]
+        expect("the brief has the CTO read cto.md at start and nothing else: the catalogue is read when a case applies",
+               "agents/cto.md" in first and "FAILURE-CATALOGUE" not in first
+               and "FAILURE-CATALOGUE" in prompt.split("TASK:", 1)[0])
+        fixed = prompt.split("TASK:", 1)[0]
+        expect(f"the brief's own text stays small (at most 260 words; it is {len(fixed.split())})",
+               len(fixed.split()) <= 260)
+        ctomd = REPO / ".ai-teammates" / "agents" / "cto.md"
+        if ctomd.exists():
+            n = len(ctomd.read_text(encoding="utf-8").split())
+            expect(f"cto.md, which every session reads whole, stays small (at most 1,250 words; it is {n})", n <= 1250)
+            expect("...and still carries what the catalogue was read for: the nine failure shapes, one line each",
+                   len(re.findall(r"^\d\. ", ctomd.read_text(encoding="utf-8").split("## The nine", 1)[-1]
+                                  .split("\n## ", 1)[0], re.M)) == 9)
+
         # COST (issue #16). What today has cost goes into the brief (`seat.py spend`, tested for real in
         # CARDS; here a stand-in proves the launcher carries the line to the model). And a headless run
         # of the CTO itself, which nobody watches, can be capped: config.json cto.max_usd.
@@ -2383,6 +2492,70 @@ def check_launcher():
         a = launch('print("  ok    stub: all fine")\n')[1].splitlines()
         expect("CONTROL: with no cto.max_usd there is no cap flag", "--max-budget-usd" not in a)
         (hk / "seat.py").unlink()
+
+
+def check_selftest_stamp():
+    """When does the pre-flight re-run the framework's self-test, and when may it not skip it?
+
+    The self-test proves the hook CODE (in throwaway repositories); it says nothing new while that
+    code, the launcher, the config, the seat specs, the hook registration and the tools are the same
+    as when it last passed. So it is skipped exactly then, and never on the word of a failed run."""
+    print("\n  SELF-TEST STAMP — is the self-test skipped only when nothing it tests has changed?")
+    import os
+    import tempfile
+    import time
+    expect = lambda desc, cond: (ok if cond else bad)(f"self-test: {desc}")
+    with tempfile.TemporaryDirectory() as td:
+        proj = Path(td) / "p"
+        hk = proj / ".ai-teammates" / "hooks"
+        hk.mkdir(parents=True)
+        (proj / ".ai-teammates" / "agents").mkdir()
+        (proj / ".claude").mkdir()
+        (proj / "src").mkdir()
+        files = {"hook": hk / "guard.py", "config": proj / ".ai-teammates" / "config.json",
+                 "spec": proj / ".ai-teammates" / "agents" / "cto.md", "settings": proj / ".claude" / "settings.json",
+                 "product": proj / "src" / "a.ts"}
+        for f in files.values():
+            f.write_text("one\n")
+        fp = lambda: fingerprint(proj, versions="v1")
+        base = fp()
+        changed = {}
+        for name, f in files.items():
+            f.write_text("two\n")
+            changed[name] = fp() != base
+            f.write_text("one\n")
+        expect(f"the fingerprint changes with a hook, the config, a seat spec and the hook registration, "
+               f"and not with product code (got {changed})",
+               changed == {"hook": True, "config": True, "spec": True, "settings": True, "product": False}
+               and fp() == base)
+        expect("...and with the versions of python, git and claude", fingerprint(proj, versions="v2") != base)
+        stamp = Path(td) / "selftest.json"
+        now = time.time()
+        expect("never run here: due", selftest_due(stamp, base, now)[0] is True)
+        finish_selftest(stamp, base, failures=1, passed=300, now=now)
+        expect("a self-test that FAILED is never recorded as passed: still due", selftest_due(stamp, base, now)[0] is True)
+        finish_selftest(stamp, base, failures=0, passed=300, now=now)
+        due, why = selftest_due(stamp, base, now + 3600)
+        expect("passed for these exact files an hour ago: not due, and the line says when and how many",
+               due is False and "300" in why)
+        expect("one file changed since: due", selftest_due(stamp, "other", now + 3600)[0] is True)
+        expect("older than 7 days: due (the machine around the code changes too)",
+               selftest_due(stamp, base, now + 8 * 86400)[0] is True)
+        stamp.write_text("{not json")
+        expect("an unreadable stamp: due (a guard that cannot decide runs the check)",
+               selftest_due(stamp, base, now)[0] is True)
+    # --project is the every-start half. Run for real, on this project; the depth guard keeps the
+    # suite from starting itself over and over if the flag were ever ignored again.
+    if not os.environ.get("AI_TEAMMATES_SUITE_DEPTH"):
+        try:
+            q = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--project"], cwd=REPO,
+                               capture_output=True, text=True, timeout=45,
+                               env={**os.environ, "AI_TEAMMATES_SUITE_DEPTH": "1"})
+            out = q.stdout
+        except subprocess.TimeoutExpired:
+            out = "(timed out: it ran the whole suite)"
+        expect("--project runs the checks about this project and none of the self-test",
+               "STATIC —" in out and "PARITY —" in out and "GUARD —" not in out and "CARDS —" not in out)
 
 
 def check_board_digest():
@@ -2591,19 +2764,38 @@ def run(check, *args):
 
 
 def main():
+    import time
     s = seats()
     print(f"  {len(s)} seats defined")
-    for check, args in ((check_static, (s,)), (check_tracked, ()), (check_hook, ()), (check_delegation_policy, ()), (check_harness, ()),
-                        (check_models, (s,)),
-                        (check_parity, ()), (check_parity_rules, ()), (check_guard, ()), (check_loopguard, ()),
-                        (check_cards, ()), (check_delegation_report, ()), (check_setup, ()), (check_seat_limits, ()), (check_memory, ()), (check_memslice, ()),
-                        (check_memlife, ()), (check_fact_review, ()), (check_launcher, ()),
-                        (check_board_digest, ()), (check_dashboard, ()), (check_session_end, ()), (check_scrubber, ()),
-                        (check_prepush, ())):
+    # About THIS project, right now: cheap, and run at every start.
+    project = ((check_static, (s,)), (check_tracked, ()), (check_hook, ()), (check_delegation_policy, ()),
+               (check_models, (s,)), (check_parity, ()))
+    # The framework's code, executed in throwaway repositories: the self-test.
+    selftest = ((check_harness, ()), (check_parity_rules, ()), (check_guard, ()), (check_loopguard, ()),
+                (check_cards, ()), (check_delegation_report, ()), (check_setup, ()), (check_seat_limits, ()),
+                (check_memory, ()), (check_memslice, ()), (check_memlife, ()), (check_fact_review, ()),
+                (check_launcher, ()), (check_selftest_stamp, ()), (check_board_digest, ()), (check_dashboard, ()),
+                (check_session_end, ()), (check_scrubber, ()), (check_prepush, ()))
+    mode = "project" if "--project" in sys.argv else "preflight" if "--preflight" in sys.argv else "full"
+    for check, args in project:
         run(check, *args)
+    due = mode == "full"
+    if mode == "preflight":
+        due, why = selftest_due(STAMP, fingerprint(REPO), time.time())
+        if due:
+            print(f"\n  SELF-TEST — {why}: running it now (about two minutes; skipped while nothing it tests changes)")
+        else:
+            # a `note`, so the CTO's brief says it: "N checks passed" must not read as "all ran today"
+            print("\n  SELF-TEST — is the hook code itself still proven?")
+            note(f"self-test not re-run: {why} (`cto --selftest` runs it now)")
+    if due:
+        f0, p0 = len(fails), passes[0]
+        for check, args in selftest:
+            run(check, *args)
+        finish_selftest(STAMP, fingerprint(REPO), len(fails) - f0, passes[0] - p0)
     if "--live" in sys.argv:
         check_live(s)
-    else:
+    elif due:
         print("\n  (static only — run with --live to prove the runtime honours it)")
 
     print()
