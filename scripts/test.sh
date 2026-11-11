@@ -52,6 +52,10 @@ if grep -n -i -E "supabase|postgres|wrangler|cloudflare|ON CONFLICT" "$SRC"/core
   echo "FAIL: a seat spec in core/agents names one stack (above): projects add their own in their copy"; exit 1
 fi
 
+# Keep a Changelog: one heading of each kind per release. Unreleased had "### Added" twice (2026-11).
+dup="$(awk '/^## \[Unreleased\]/{on=1; next} /^## /{on=0} on && /^### /' "$SRC/CHANGELOG.md" | sort | uniq -d)"
+if [ -n "$dup" ]; then echo "FAIL: CHANGELOG.md repeats a heading under Unreleased: $dup"; exit 1; fi
+
 echo "── install ──"
 # Pointed at the project from somewhere else, as a new user does it: `install.sh <project>`.
 # Until 2026-11 it only worked from inside the project. No terminal and no setup options here,

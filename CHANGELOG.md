@@ -33,9 +33,6 @@ All notable changes to this project are documented here. The format follows
   maximum for one run, and `cto.max_usd` caps a headless `cto "task"`.
 - `AGENTS.md` (and `CLAUDE.md`, which imports it): how an AI agent picks an issue, works in its own
   worktree, tests, and opens a pull request without touching the owner's tools or projects.
-
-### Added
-
 - `guard.py` blocks a project's agents from changing AI-teammates itself (`framework-source`): no
   edit or write into a source checkout, no git write in it, no `gh` pull request or issue from it.
   Reading it and running its scripts stay allowed, and a session in the framework repository is
@@ -84,10 +81,20 @@ All notable changes to this project are documented here. The format follows
   no longer offers another harness and refuses one in an answers file; `bin/cto` no longer has an
   `ollama launch` path, and a config with `cto.provider` other than `anthropic` stops with the
   reason; `seat.py run` refuses a seat whose spec names another harness.
-- The legacy `CONTENTOS_OVERRIDE` variable; `AI_TEAMMATES_OVERRIDE` is the one override.
+- The pilot project's legacy override variable. `AI_TEAMMATES_OVERRIDE` (set by the owner when
+  starting a session) replaces it; `AI_TEAMMATES_ALLOW` remains the per-push override.
 
 ### Changed
 
+- **The session-end commit is the CTO's only (#20).** The hooks run in every Claude Code session in
+  the project, and `session_end.py` committed the board, cards, facts and `RULES.md` at the end of
+  each one, as `cto <cto@local>`. By default it now commits only in a session started by `cto`;
+  other sessions get a line saying what was left. `session.auto_commit` in `config.json`: `cto`
+  (default), `all` (any session; a non-CTO session's commit carries the user's own git identity)
+  or `off`. **A project that relied on other sessions committing the record** sets `all`.
+- `docs/06-MEMORY.md` is one description of how memory works now, plus a short dated history; it
+  was four dated status notes stacked over superseded sections. `AGENTS.md` points at the alpha
+  tracking issue (#20).
 - **Your own git (#19).** The hooks, the launcher, the installer, seat runs and acceptance commands
   use the git that is first on `PATH`. They used `/usr/bin/git` wherever it exists and put
   `/usr/bin` first in `PATH`, the fix for one machine with a 2021 git in `/usr/local/bin`. That
