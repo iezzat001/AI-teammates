@@ -18,7 +18,16 @@ work gets lost the other way.
 
     python3 session_end.py           # commit the record, report the rest
     python3 session_end.py --check   # report only, change nothing
+
+WHOSE SESSION (2026-11, issue #20). This hook is registered in the project's
+.claude/settings.json, so it runs at the end of EVERY Claude Code session in the
+project, not only the CTO's. It used to commit for all of them, as `cto <cto@local>`:
+a contributor doing their own work had the board and the cards committed in their
+name-that-is-not-their-name. config.json "session": {"auto_commit": "cto" | "all" | "off"},
+`cto` when unset: only a session started by `cto` commits. With `all`, another
+session's commit carries that user's own git identity.
 """
+import os
 import re
 import subprocess
 import sys
@@ -40,8 +49,21 @@ def sh(*args):
                           capture_output=True, text=True).stdout.strip()
 
 
+def may_commit() -> tuple:
+    """(commit?, as the cto identity?, why not) for this session."""
+    mode = (_config.load().get("session") or {}).get("auto_commit") or "cto"
+    is_cto = os.environ.get("CLAUDE_AGENT_NAME") == "cto" and not os.environ.get("AI_TEAMMATES_SEAT") \
+        and not os.environ.get("AI_TEAMMATES_CARD")
+    if mode == "off":
+        return False, is_cto, "session.auto_commit is off"
+    if mode == "all":
+        return True, is_cto, ""
+    return is_cto, is_cto, "this is not a CTO session (config.json session.auto_commit: cto)"
+
+
 def main() -> int:
     check_only = "--check" in sys.argv
+    commit, as_cto, why_not = may_commit()
 
     dirty = [l for l in sh("status", "--porcelain").splitlines() if l]
     if not dirty:
@@ -73,6 +95,9 @@ def main() -> int:
         print(f"  session: {len(record)} record file(s) uncommitted - not auto-committed "
               f"onto {production}; commit them on the integration branch: "
               f"{', '.join(record[:3])}")
+    elif record and not check_only and not commit:
+        print(f"  session: {len(record)} record file(s) changed and not auto-committed, because {why_not}: "
+              f"{', '.join(record[:3])}")
     elif record and not check_only:
         sh("add", "--", *record)
         # Only commit if something actually staged — `git add` on an ignored or
@@ -86,8 +111,9 @@ def main() -> int:
             # The record paths, and nothing else that happens to be staged. FOUND 2026-10-28 (repo
             # analysis): a bare `git commit` took the whole index, so staged product code went into
             # this commit while the report below said it was "not auto-committed".
-            r = subprocess.run([GIT, "-c", "user.name=cto",
-                                "-c", "user.email=cto@local", "commit", "-q", "-m", msg, "--", *record],
+            # The CTO's commits are marked as the CTO's; anyone else's carry their own identity.
+            ident = ["-c", "user.name=cto", "-c", "user.email=cto@local"] if as_cto else []
+            r = subprocess.run([GIT, *ident, "commit", "-q", "-m", msg, "--", *record],
                                cwd=REPO, capture_output=True, text=True)
             if r.returncode == 0:
                 print(f"  session: committed the record ({len(record)} path(s))")

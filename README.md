@@ -239,6 +239,25 @@ is written on its card.
 
 ---
 
+## What it changes in your project
+
+Installing registers hooks in the project's `.claude/settings.json`. Claude Code reads that file
+for **every** session opened in the project, so the hooks also run when you, or a contributor,
+use Claude Code there without `cto`:
+
+| Hook | In any Claude Code session in the project |
+|---|---|
+| `guard.py` (before each tool call) | Product files cannot be edited in a checkout on a protected branch; changing the guardrails themselves asks you first. The delegation rule and the seat rules apply only to the CTO and to seats. |
+| `session_start.py` | Prints the standing rules (branches, seats) and anything waiting on you. |
+| `activity.py`, `loopguard.py` | Log tool use to `.git/ai-teammates/` (secrets scrubbed) and stop a run that keeps retrying what only you can fix. |
+| `session_end.py` | Reports uncommitted work. It commits the board, cards and facts **only in a session started by `cto`**; set `"session": {"auto_commit": "all"}` in `config.json` to have every session do it, or `"off"` for none. |
+| git `pre-push` | Judges every push from this clone, from any tool or terminal. |
+
+To start one session without the guard, you (not an agent) set `AI_TEAMMATES_OVERRIDE='<why>'`
+before launching it; it is logged. To remove everything: `ai-teammates uninstall`.
+
+---
+
 ## Configure
 
 Everything project-specific lives in `.ai-teammates/config.json`. The installer fills it

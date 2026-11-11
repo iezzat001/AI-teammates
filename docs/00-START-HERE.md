@@ -15,6 +15,11 @@ docs, config, board) and puts `cto` and `ai-teammates` on your PATH. Outside
 it did not write). Runtime state
 lives in `.git/ai-teammates/`, shared by every worktree and never committed.
 
+The hooks run in every Claude Code session opened in the project, not only the CTO's: the
+guard and the push rules apply to all of them, while the session-end commit of the board and
+cards happens only in a session started by `cto` (`session.auto_commit` in `config.json`: `cto`,
+`all` or `off`). The README has the table.
+
 Re-running upgrades hooks, docs and `cto.md`. It never touches your config,
 board, `RULES.md`, or seat specs you already have, and does not bring back a seat you dropped.
 

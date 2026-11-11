@@ -14,7 +14,7 @@ then fix the code. A check that has never failed may be unable to.
 ## Before you change anything
 
 1. Pick work from the [issues](https://github.com/iezzat001/AI-teammates/issues). The tracking
-   issues (e.g. #6) give the order. Take the first open issue whose dependencies are closed, and
+   issue gives the order (the alpha: #21). Take the first open issue whose dependencies are closed, and
    comment that you are working on it.
 2. Work in your own worktree, **beside** this checkout, never inside it:
    ```bash

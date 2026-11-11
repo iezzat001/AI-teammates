@@ -2890,9 +2890,11 @@ def check_session_end():
         proj = Path(td) / "p"
         proj.mkdir()
         base = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
+        for k in ("CLAUDE_AGENT_NAME", "AI_TEAMMATES_SEAT", "AI_TEAMMATES_CARD"):
+            base.pop(k, None)
         g = lambda *a: subprocess.run([GIT, *a], cwd=proj, env=base, capture_output=True, text=True)
         g("init", "-q", "-b", "development")
-        g("config", "user.email", "t@t"); g("config", "user.name", "t")
+        g("config", "user.email", "dev@example.com"); g("config", "user.name", "a developer")
         ai = proj / ".ai-teammates"
         shutil.copytree(here, ai / "hooks", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         (ai / ".gitignore").write_text("hooks/__pycache__/\n")
@@ -2905,10 +2907,39 @@ def check_session_end():
         (ai / "board.json").write_text('{"tasks": []}\n')           # the record
         (proj / "src" / "a.ts").write_text("a\nstaged product change\n")
         g("add", "src/a.ts")                                          # product code, already staged
-        r = subprocess.run([sys.executable, str(ai / "hooks" / "session_end.py")], cwd=proj, env=base,
-                           capture_output=True, text=True)
+        end = lambda **extra: subprocess.run([sys.executable, str(ai / "hooks" / "session_end.py")], cwd=proj,
+                                             env={**base, **extra}, capture_output=True, text=True)
+        head = lambda: g("rev-parse", "HEAD").stdout.strip()
+        # WHOSE SESSION (issue #20). The hooks are registered in the project's .claude/settings.json, so
+        # they run in EVERY Claude Code session there. FOUND 2026-11-10 (repo audit): a contributor who
+        # opened Claude Code in the project to do their own work had this hook commit the board and
+        # the cards for them, as `cto <cto@local>`. By default it commits only in a CTO session.
+        before = head()
+        r = end()
+        expect("a session that is not the CTO's commits nothing: it reports the record files instead",
+               head() == before and "board.json" in r.stdout and "not auto-committed" in r.stdout)
+        r = end(CLAUDE_AGENT_NAME="tester", AI_TEAMMATES_SEAT="Tester")
+        expect("...and neither does a seat's", head() == before)
+        cfgp = ai / "config.json"
+        cfg0 = cfgp.read_text()
+        cfgp.write_text(json.dumps({**json.loads(cfg0), "session": {"auto_commit": "off"}}))
+        g("commit", "-qm", "config: off", "--", ".ai-teammates/config.json")
+        before = head()
+        end(CLAUDE_AGENT_NAME="cto")
+        expect("session.auto_commit off: not even the CTO's session commits", head() == before)
+        cfgp.write_text(json.dumps({**json.loads(cfg0), "session": {"auto_commit": "all"}}))
+        g("commit", "-qm", "config: all", "--", ".ai-teammates/config.json")
+        end()
+        expect("session.auto_commit all: any session commits the record, under the user's own git identity",
+               g("log", "-1", "--format=%an|%s").stdout.startswith("a developer|chore(session)")
+               and g("show", "--name-only", "--format=", "HEAD").stdout.split() == [".ai-teammates/board.json"])
+        cfgp.write_text(cfg0)
+        g("commit", "-qm", "config: default", "--", ".ai-teammates/config.json")
+        (ai / "board.json").write_text('{"tasks": [1]}\n')
+        r = end(CLAUDE_AGENT_NAME="cto")
         files = g("show", "--name-only", "--format=", "HEAD").stdout.split()
-        expect("the session record is committed", ".ai-teammates/board.json" in files)
+        expect("the CTO's session commits the session record, as cto",
+               ".ai-teammates/board.json" in files and g("log", "-1", "--format=%an").stdout.strip() == "cto")
         expect("staged product code is NOT swept into that commit, and stays staged",
                "src/a.ts" not in files and "src/a.ts" in g("diff", "--cached", "--name-only").stdout)
         expect("...and the run says so", "UNCOMMITTED PRODUCT CODE" in r.stdout)
