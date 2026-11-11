@@ -48,12 +48,19 @@ REVIEWS = _config.state_dir() / "reviews.jsonl"
 # guardrail scripts themselves. A check that fires on ordinary work is the
 # "rule nobody can satisfy" failure - people override it by habit and then miss
 # the real one. Narrow enough to be believed.
+#
+# SOURCE FILES IN ANY LANGUAGE (2026-11, issue #19). The auth rule knew ts/tsx/js/py/go/rb and the
+# middleware rule four of those: an `auth.rs` or an `AuthService.swift` was not a security-touching
+# file. A list of source extensions, not "any extension": `auth.png` and `authors.txt` stay out.
+# A project adds its own with config.json "review": {"sensitive_paths": [...], "sensitive_code": [...]}.
+SRC_EXT = (r"(?:ts|tsx|js|jsx|mjs|cjs|vue|svelte|py|go|rb|rs|swift|kt|kts|java|scala|cs|fs|php|ex|exs|erl|"
+           r"clj|c|cc|cpp|h|hpp|m|mm|dart|lua|pl|sh|sql)")
 SENSITIVE_PATH = re.compile(
     r"(?:^|/)("
-    r"[^/]*auth[^/]*\.(ts|tsx|js|py|go|rb)|"     # authX.ts, not _authenticated/
+    r"[^/]*auth[^/]*\." + SRC_EXT + r"|"          # authX.ts, not _authenticated/
     r"[^/]*(token|secret|credential|keyring|allowlist)[^/]*|"
     r"\.env[^/]*|wrangler\.[^/]+|"
-    r"[^/]*(middleware|guard|policy|rbac|acl)[^/]*\.(ts|tsx|js|py)"
+    r"[^/]*(middleware|guard|policy|rbac|acl)[^/]*\." + SRC_EXT +
     r")$", re.I)
 # Content signals that actually move a trust boundary. No bare deny/allow/verify.
 SENSITIVE_CODE = re.compile(
@@ -75,7 +82,24 @@ def sh(*args, check=False):
     return r.stdout.strip()
 
 
-def _adds_sensitive_code(sha: str) -> bool:
+def project_patterns() -> tuple:
+    """(path patterns, code patterns) the project added in config.json "review". A pattern that
+    is not a regular expression raises: the callers fail closed, because a gate that quietly
+    drops the owner's rule is off exactly where they asked for it."""
+    cfg = _config.load().get("review") or {}
+    out = []
+    for key in ("sensitive_paths", "sensitive_code"):
+        pats = cfg.get(key) or []
+        try:
+            if not isinstance(pats, list):
+                raise TypeError("not a list")
+            out.append([re.compile(p, re.I) for p in pats])
+        except (re.error, TypeError) as e:
+            raise RuntimeError(f"config.json review.{key} is not a list of regular expressions ({e})")
+    return tuple(out)
+
+
+def _adds_sensitive_code(sha: str, extra=()) -> bool:
     """Does the diff of `sha` ALONE add a SENSITIVE_CODE line to a file that is
     not exempt?
 
@@ -100,7 +124,8 @@ def _adds_sensitive_code(sha: str) -> bool:
                 scan = name != "/dev/null" and not EXEMPT_PATH.search(name)
             elif line.startswith("@@"):
                 cols = line.index(" ") - 1          # "@@ " = 1 column, "@@@ " = 2 (a merge)
-            elif cols and scan and line[:cols] == "+" * cols and SENSITIVE_CODE.search(line[cols:]):
+            elif cols and scan and line[:cols] == "+" * cols and (
+                    SENSITIVE_CODE.search(line[cols:]) or any(p.search(line[cols:]) for p in extra)):
                 return True
         err = p.stderr.read()
         if p.wait() != 0:                           # half a diff is not "nothing found"
@@ -176,12 +201,13 @@ def scan(revs):
     `revs` is whatever `git log` takes: ["main..development"] here, prepush's
     [local, "^remote"] there. The second value is [(sha7, subject, hits)]."""
     commits = [l for l in sh("log", "--format=%H %s", *revs, check=True).splitlines() if l]
+    own_paths, own_code = project_patterns()
     flagged = []
     for line in commits:
         sha, _, subj = line.partition(" ")
         files = [f for f in sh("show", "--name-only", "--format=", sha, check=True).splitlines()
                  if f and not EXEMPT_PATH.search(f)]
-        hits = [f for f in files if SENSITIVE_PATH.search(f)]
+        hits = [f for f in files if SENSITIVE_PATH.search(f) or any(p.search(f) for p in own_paths)]
         # Path names are not the whole story - a plain-looking file can add an
         # Authorization header. Look at what THIS commit adds, in files we did
         # not exempt.
@@ -193,7 +219,7 @@ def scan(revs):
         # thing (catalogue #1). When that came back empty it fell back to the WHOLE
         # commit, exempt docs included, so a doc quoting "Authorization: Bearer"
         # flagged an unrelated commit.
-        if not hits and files and _adds_sensitive_code(sha):
+        if not hits and files and _adds_sensitive_code(sha, own_code):
             hits = ["(content)"]
         if hits:
             flagged.append((sha[:7], subj[:56], hits[:3]))

@@ -35,9 +35,7 @@ SERVE = REPO / _config.load().get("dashboard_dir", ".ai-teammates/dashboard")
 PROD = _config.branches()[0]
 # /board.json, /rules.json, /team.json and /health.json are generated (below).
 DATA = {"/events.jsonl": (_config.state_dir() / "events.jsonl", "text/plain")}
-# Apple's git in /usr/bin is 2.50; /usr/local/bin/git is a 2021 install (2.19)
-# that lacks --show-current and --sparse. Pin the good one.
-GIT = "/usr/bin/git" if Path("/usr/bin/git").exists() else "git"
+GIT = _config.GIT      # the user's git, unless it is too old (_config.git_bin)
 
 
 def sh(*args, cwd=REPO):

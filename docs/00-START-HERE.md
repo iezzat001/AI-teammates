@@ -106,6 +106,14 @@ routing doc once named a model that had never existed, for weeks.
 that `seat.py land` runs on the merged result every time a card lands. Two cards can each pass
 their own checks and break each other; this is where the second one is refused.
 
+**`review`** (optional): `{"sensitive_paths": ["(^|/)billing/"], "sensitive_code": ["charge_customer\\("]}`
+adds your project's own regular expressions to what the independent-review gate treats as deciding
+access or spend (file paths, and lines a commit adds). The built-in rules cover auth, token,
+secret, middleware and policy files in any language. A pattern that is not a regular expression
+blocks the promotion and says so.
+
+**`memory.mempalace_bin`** (optional): the path of the `mempalace` command when it is not on `PATH`.
+
 **`budget`** (optional): `{"daily_usd": 20}` is what all card runs together may cost in one day
 (`0` = no daily budget). One run is bounded by its card's `budget.usd`; the default and the most a
 card may ask for are `cards.default_usd` (1) and `cards.max_usd` (5). `cto.max_usd` caps a headless

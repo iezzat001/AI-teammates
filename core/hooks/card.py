@@ -529,8 +529,7 @@ def run_acceptance(card: dict, wt: Path) -> list:
         try:
             p = subprocess.run(["/bin/sh", "-c", cmd], cwd=str(wt), capture_output=True, text=True,
                                timeout=L["acceptance_timeout"],
-                               env={**__import__("os").environ, "PATH": "/usr/bin:/bin:" +
-                                    __import__("os").environ.get("PATH", "")})
+                               env={**__import__("os").environ, "PATH": _config.tool_path()})
             tail = ((p.stdout or "") + (p.stderr or "")).strip()[-200:]
             res.append({"run": cmd, "rc": p.returncode, "tail": tail})
         except subprocess.TimeoutExpired:

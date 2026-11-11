@@ -47,6 +47,10 @@ They are **not a sandbox** and won't stop a determined or compromised agent:
 - **The independent-review gate checks that an audit ran, not what it found.** A promotion
   that touches auth or spend needs a finished read-only audit run newer than the change; the
   verdict is yours to read.
+- **The gate decides what "touches auth or spend" means by patterns**: file names (auth,
+  token, secret, middleware, policy and the like, in source files of any language) and a few
+  code signals. It is tuned to fire rarely. Add your project's own with `review.sensitive_paths`
+  and `review.sensitive_code` in `config.json`; what no pattern names is not gated.
 - **Teammates use your Claude account** and spend from the same limits as your own session.
 
 If you find a gap in any of the protections listed above, that is a vulnerability: please

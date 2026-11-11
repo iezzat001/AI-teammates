@@ -42,7 +42,7 @@ import _config  # noqa: E402
 # feature -> integration -> production, and a seat branched off production
 # skips the branch it must merge into (the pilot project, 2026-09-18).
 BASE = _config.branches()[1] or _config.branches()[0]
-GIT_BIN = "/usr/bin/git" if Path("/usr/bin/git").exists() else "git"
+GIT_BIN = _config.GIT
 AGENTS = REPO / ".ai-teammates" / "agents"
 RUNS = _config.state_dir() / "agent_runs.jsonl"
 EVENTS = _config.state_dir() / "events.jsonl"
@@ -172,11 +172,8 @@ def cmd_run(agents, name, task):
     env = dict(os.environ)
     env["CLAUDE_AGENT_NAME"] = name          # <- makes hooks attribute to this seat
     env["AI_TEAMMATES_SEAT"] = a.get("seat", name)
-    # /usr/local/bin/git has been a 2021 standalone install (2.19.0) shadowing
-    # Apple's 2.50.1 in /usr/bin: `--sparse` and worktrees need 2.25, and 247
-    # failures sat in a harness log before anyone noticed. /usr/bin first, for
-    # the seat only; fixing it system-wide is the human's call.
-    env["PATH"] = "/usr/bin:" + env.get("PATH", "")
+    # The user's PATH, unless the git on it is too old to work with (_config.tool_path).
+    env["PATH"] = _config.tool_path(env.get("PATH", ""))
 
     # Bring the worktree up to date with BASE before launching. Twice now a
     # seat has been handed a spec that did not exist in its checkout: the

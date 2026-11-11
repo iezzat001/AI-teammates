@@ -167,7 +167,9 @@ These are not policy, they are landmines that cost days.
 
 - **A shadowing binary.** `/usr/local/bin/git` was 2.19 from 2021, shadowing
   2.50. `git add --sparse` failed **247 times** silently inside a harness.
-  Hooks now prefix `PATH="/usr/bin:$PATH"`.
+  The hooks, the launcher and every seat run use your own git, the first on `PATH`; only when
+  that one is older than 2.25 and `/usr/bin/git` is newer do they use the newer one
+  (`_config.git_bin`). *SUPERSEDED 2026-11: they used to put `/usr/bin` first for everybody.*
 - **Build-time vs runtime config.** `VITE_*` vars are baked into the browser
   bundle **at build time**. Server-side secrets do not help. A build from a
   worktree with no `.env` ships a bundle that fails for every visitor, while the
