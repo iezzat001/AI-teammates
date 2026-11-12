@@ -144,6 +144,15 @@ All notable changes to this project are documented here. The format follows
 
 ### Security
 
+- The delegation rule read a CTO shell write only when the product file was named by a path from the
+  repository root (#29). The same write passed after `cd` or `pushd`, with `git -C <folder>`, from a
+  session already in the folder, inside `( )` or `{ }`, in a function or a case arm, after `then` or
+  `do`, through `bash -c`, `find -exec` or a variable, and against the product folder itself
+  (`rm -rf src`). `guard.py` now follows where each command runs, including variables set in the
+  same line, and refuses a write it cannot place: a file named through a variable or a command's
+  output it cannot read, a relative file after a `cd` it cannot follow, files on `xargs`' input.
+  Commands in a group, a function, a case arm or after a shell keyword are now read by every rule
+  that reads the shell (the seat rules, the guardrail files, the framework source, the git rules).
 - The independent-review gate ran only on a typed `git merge development` into production.
   `git push origin development:main` promoted the same commits without it. `prepush.py` now runs
   it on every push that lands on production, and blocks when it cannot run.

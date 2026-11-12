@@ -28,6 +28,7 @@ import _config
 import loopguard
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -140,6 +141,11 @@ LEADER_VALUE_OPTS = {"sudo": {"-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-
 GIT_VALUE_OPTS = ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env")
 _FD = re.compile(r"\d*[<>]&\d+|&>>?")
 _SEP = re.compile(r"\|\||&&|[;|&\n]")
+# Shell words that stand in front of a command without being one. FOUND 2026-11-12 (issue #29): the
+# command word was read only as the first word of a simple command, so `then sed -i ...`,
+# `do rm ...`, `{ rm ...; }`, `(sed -i ...)`, `f() { rm ...; }` and a case arm each hid a write
+# from every rule that reads the shell.
+KEYWORDS = {"{", "}", "!", "if", "then", "else", "elif", "do", "while", "until"}
 
 
 def _words(text):
@@ -156,6 +162,12 @@ def _strip_leaders(w):
         if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w[0]):
             w.pop(0)
             continue
+        if w[0] in KEYWORDS:
+            w.pop(0)
+            continue
+        if w[0] == "function":                      # function name { ... }
+            del w[:2]
+            continue
         lead = os.path.basename(w[0])
         if lead not in LEADERS:
             break
@@ -169,25 +181,64 @@ def _strip_leaders(w):
     return w
 
 
-def _parts(cmd):
-    """Each simple command in a line (split at ; && || | & and newlines) as (blank, argv, raw):
+def _ungroup(blank, raw):
+    """Grouping syntax made plain, at the same offsets in both strings: the ( and ) of a subshell
+    become spaces; the () of a function definition and the ) that ends a case pattern become a
+    separator. $(...), <(...), >(...) and name=(...) are left as they are. Also returns the
+    offsets where a subshell opens and where one closes: what `cd` does inside ends there."""
+    b, r, stack, start, i = list(blank), list(raw), [], True, 0
+    opens, closes = [], []
+    while i < len(b):
+        c = b[i]
+        if c == "(":
+            j = i + 1
+            while j < len(b) and b[j] in " \t":
+                j += 1
+            k = j + 1
+            while k < len(b) and b[k] in " \t\n":
+                k += 1
+            if i and b[i - 1] in "$<>=":
+                stack.append(False)
+            elif not start and j < len(b) and b[j] == ")" and k < len(b) and b[k] == "{":
+                b[i] = r[i] = " "                    # name() { ... }
+                b[j] = r[j] = ";"
+                i, start = j + 1, True
+                continue
+            elif start:
+                b[i] = r[i] = " "
+                stack.append(True)
+                opens.append(i)
+            else:
+                stack.append(False)
+        elif c == ")":
+            if not stack:
+                b[i] = r[i] = ";"                    # the end of a case pattern
+                start = True
+            elif stack.pop():
+                b[i] = r[i] = " "
+                closes.append(i)
+        elif c in ";|&\n":
+            start = True
+        elif c not in " \t":
+            start = False
+        i += 1
+    return "".join(b), "".join(r), opens, closes
 
-    blank  its text with quoted strings blanked and fd duplications (2>&1) removed: for SYNTAX,
-           so a '>' or ';' inside quotes is not a redirect or a separator
-    argv   its words dequoted, leading VAR=value and wrappers (sudo, env, ...) dropped, the command
-           word as a basename (/usr/bin/ssh is ssh), git's global options dropped: for WHICH
-           command runs (`git -C x push` is `git push`)
-    raw    its dequoted words before anything was dropped"""
+
+def _parts_text(cmd):
+    """_parts, and for each simple command: its own text (to read a redirect's target), how many
+    subshells open in front of it and how many close behind it."""
     blank, raw = _unquote(cmd), cmd
     # fd duplications and &> are not separators: neutralised at the same offsets in both strings
     for m in reversed(list(_FD.finditer(blank))):
         rep = " " * len(m.group(0)) if "&>" not in m.group(0) else " " + m.group(0)[1:]
         blank = blank[:m.start()] + rep + blank[m.end():]
         raw = raw[:m.start()] + rep + raw[m.end():]
+    blank, raw, opens, closes = _ungroup(blank, raw)
     out, pos = [], 0
     for m in list(_SEP.finditer(blank)) + [None]:
         end = m.start() if m else len(blank)
-        b, rw = blank[pos:end], _words(raw[pos:end])
+        b, text, rw = blank[pos:end], raw[pos:end], _words(raw[pos:end])
         pos = m.end() if m else end
         w = _strip_leaders(list(rw))
         if w:
@@ -197,8 +248,23 @@ def _parts(cmd):
                 while i < len(w) and w[i].startswith("-"):
                     i += 2 if w[i] in GIT_VALUE_OPTS else 1
                 w = ["git"] + w[i:]
-        out.append((b, w, rw))
+        within = lambda offsets: sum(1 for o in offsets if end - len(b) <= o < end)
+        out.append((b, w, rw, text, within(opens), within(closes)))
     return out
+
+
+def _parts(cmd):
+    """Each simple command in a line (split at ; && || | & and newlines) as (blank, argv, raw):
+
+    blank  its text with quoted strings blanked and fd duplications (2>&1) removed: for SYNTAX,
+           so a '>' or ';' inside quotes is not a redirect or a separator
+    argv   its words dequoted, leading VAR=value and wrappers (sudo, env, ...) dropped, the command
+           word as a basename (/usr/bin/ssh is ssh), git's global options dropped: for WHICH
+           command runs (`git -C x push` is `git push`)
+    raw    its dequoted words before anything was dropped
+
+    Shell keywords and grouping in front of a command are dropped too (KEYWORDS, _ungroup)."""
+    return [p[:3] for p in _parts_text(cmd)]
 
 
 def _segments(cmd):
@@ -210,6 +276,11 @@ def _substitutions(cmd):
     """What $(...) and backticks would run. Single-quoted text does not expand; double-quoted does."""
     text = re.sub(r"'[^']*'", lambda m: " " * len(m.group(0)), cmd)
     return [a or b for a, b in re.findall(r"\$\(([^()]*)\)|`([^`]*)`", text)]
+
+
+_SH_C = re.compile(r"""(?:^|[\s;&|(])(?:\S*/)?(?:ba|z|da|k|fi)?sh\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*c\s+(['"])(.*?)\1""")
+_EVAL = re.compile(r"""(?:^|[\s;&|(])eval\s+(['"])(.*?)\1""")
+XARGS_VALUE_OPTS = ("-I", "-n", "-P", "-L", "-s", "-d", "-E", "-p", "--package")
 
 
 def _commands(cmd, depth=0):
@@ -231,7 +302,7 @@ def _commands(cmd, depth=0):
         if v in ("xargs", "npx", "bunx", "eval"):
             i = 1
             while i < len(w) and w[i].startswith("-"):
-                i += 2 if w[i] in ("-I", "-n", "-P", "-L", "-s", "-d", "-E", "-p", "--package") else 1
+                i += 2 if w[i] in XARGS_VALUE_OPTS else 1
             if i < len(w):
                 out.append(" ".join(w[i:]))
         if v == "find":
@@ -239,9 +310,9 @@ def _commands(cmd, depth=0):
                 if x in ("-exec", "-execdir", "-ok", "-okdir") and j + 1 < len(w):
                     out.append(" ".join(w[j + 1:]))
     if depth < 3:
-        for m in re.finditer(r"""(?:^|[\s;&|(])(?:\S*/)?(?:ba|z|da|k|fi)?sh\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*c\s+(['"])(.*?)\1""", cmd):
+        for m in _SH_C.finditer(cmd):
             out += _commands(m.group(2), depth + 1)
-        for m in re.finditer(r"""(?:^|[\s;&|(])eval\s+(['"])(.*?)\1""", cmd):
+        for m in _EVAL.finditer(cmd):
             out += _commands(m.group(2), depth + 1)
         for sub in _substitutions(cmd):
             out += _commands(sub, depth + 1)
@@ -402,6 +473,23 @@ def _locate(p):
     d = pp.parent
     while not d.exists() and d != d.parent:          # a new file in a new folder
         d = d.parent
+    if d not in _CHECKOUTS:                          # one shell line can name many files in a folder
+        _CHECKOUTS[d] = _checkout(d)
+    if _CHECKOUTS[d] is None:
+        return None
+    top, branch = _CHECKOUTS[d]
+    try:
+        rel = str(pp.relative_to(top))
+    except ValueError:
+        return None
+    return top, rel, branch
+
+
+_CHECKOUTS = {}
+
+
+def _checkout(d):
+    """(top, branch) of the checkout of THIS repository that folder d is in, else None."""
     run = lambda *a: subprocess.run([GIT, "-C", str(d), *a], capture_output=True, text=True, timeout=10)
     top = run("rev-parse", "--show-toplevel")
     if top.returncode != 0:
@@ -409,12 +497,7 @@ def _locate(p):
     common = run("rev-parse", "--path-format=absolute", "--git-common-dir").stdout.strip()
     if not common or Path(common).resolve() != _config.common_dir().resolve():
         return None                                  # another repository: not this project's rules
-    top = Path(top.stdout.strip()).resolve()
-    try:
-        rel = str(pp.relative_to(top))
-    except ValueError:
-        return None
-    return top, rel, run("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    return Path(top.stdout.strip()).resolve(), run("rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
 
 
 # Editing the guardrails is a decision for the owner, never a way past a block. config.json is one of
@@ -645,9 +728,338 @@ def _product_file(p):
     if loc is None:
         return None
     top, rel = (loc[0], loc[1]) if loc else (REPO, rel_path(p))
-    if not rel.startswith(_config.guarded()) or any(re.search(x, rel) for x in _config.load()["edit_exempt"]):
+    # `rm -rf src` names the product folder itself: "src" is not under "src/" by prefix
+    if not (rel.startswith(_config.guarded()) or rel + "/" in _config.guarded()) \
+            or any(re.search(x, rel) for x in _config.load()["edit_exempt"]):
         return None
     return top, rel
+
+
+# --- where a shell write lands ------------------------------------------------
+# FOUND 2026-11-11 by the pilot project's CTO, reproduced 2026-11-12 (issue #29): the delegation rule
+# resolved every word of a writing command against the repository root. `cd src && sed -i ... a.ts`,
+# `git -C src checkout -- a.ts`, the same write from a session already in src/, `F=src/a.ts; rm $F`,
+# `bash -c '...'`, `find src -exec sed -i ...` and `rm -rf src` all changed product code unseen.
+SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "fish"}
+DECLARE = {"export", "local", "readonly", "declare", "typeset"}
+GIT_PATH_VERBS = {"checkout", "restore", "rm", "mv", "apply", "clean", "stash"}   # their words can be files
+TRANSFER = {"curl", "wget", "scp", "sftp"}                 # their words are mostly URLs and headers
+_VAR = re.compile(r"\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))")
+_ASSIGN = re.compile(r"^([A-Za-z_]\w*)=(.*)$", re.S)
+_SUBST = re.compile(r"\$\(([^()]*)\)|`([^`]*)`")
+
+
+def _plain(words):
+    """The words that can name a file: no options, but the value of --option=value; a word glued to a
+    redirect (>out.txt) without the redirect."""
+    out = []
+    for x in words:
+        if x.startswith("-"):
+            x = x.split("=", 1)[1] if "=" in x else ""
+        out += [y for y in re.split(r"[<>|&]+", x) if y]
+    return out
+
+
+def _redirect_targets(blank, text):
+    """The files this simple command redirects its output to."""
+    out = []
+    for m in re.finditer(r">>?\|?", blank):
+        first = _words(text[m.end():])[:1]
+        if first and first[0] != "/dev/null" and not first[0].startswith("("):
+            out.append(first[0])
+    return out
+
+
+def _writes_paths(w):
+    """True when this command's own words name the files it changes (rm, cp, sed -i, git checkout ...).
+    An interpreter's words are a script and its arguments, curl's are URLs and headers, git commit's
+    are a message: those are judged only where they do name a product file."""
+    if w[0] == "git":
+        return len(w) > 1 and w[1] in GIT_PATH_VERBS
+    return bool(_write_reason("", w)) and w[0] not in OPAQUE and w[0] not in TRANSFER
+
+
+def _written(blank, w, text):
+    """The words of one simple command that name what it writes."""
+    own = []
+    if _writes_paths(w):
+        if w[0] == "git":
+            own = _plain(w[w.index("--") + 1:] if "--" in w else w[2:])
+        elif w[0] == "sed":                              # its script is not a file
+            rest, script, i = [], False, 1
+            while i < len(w):
+                if w[i] in ("-e", "-f", "--expression", "--file"):
+                    script, i = True, i + 1
+                elif w[i] and not w[i].startswith("-"):
+                    rest.append(w[i])
+                i += 1
+            own = _plain(rest if script else rest[1:])
+        else:
+            own = _plain(w[1:])
+            own = own[-1:] if w[0] in COPY_VERBS else own
+    return own + _redirect_targets(blank, text)
+
+
+def _lift(cmd):
+    """(cmd with each $(...) and `...` replaced by one word, what those run). mktemp's output becomes
+    a path in the temporary folder; any other output is unknown here, and reads as a variable
+    nothing can resolve."""
+    bodies = []
+    for _ in range(4):                                   # innermost first
+        text = re.sub(r"'[^']*'", lambda m: " " * len(m.group(0)), cmd)
+        found = list(_SUBST.finditer(text))
+        if not found:
+            break
+        for m in reversed(found):
+            g = 1 if m.group(1) is not None else 2
+            body = cmd[m.start(g):m.end(g)]
+            bodies.append(body)
+            first = next((w for _, w, _ in _parts(body) if w), [""])
+            cmd = cmd[:m.start()] + (os.path.join(tempfile.gettempdir(), "mktemp") if first[0] == "mktemp"
+                                     else "$?") + cmd[m.end():]
+    return cmd, bodies
+
+
+def shell_product_write(cmd, cwd):
+    """(checkout, product file, why) for the first write to product code in this shell line;
+    (None, what could not be read, why) for a write this check cannot place; else None.
+
+    It follows where each command runs: `cd`, `pushd` and `popd`, a subshell that ends, `git -C`,
+    variables set earlier in the line (W=...; cd "$W"), loop variables and the environment. What
+    `bash -c`, `eval`, `$(...)` and a heredoc fed to a shell run is judged from every folder the
+    line visits; what `find -exec` and `xargs` run, from where they stand.
+
+    A guard that cannot decide refuses: a file named through a variable or a command's output it
+    cannot read, a relative file after a `cd` it cannot follow, and files that arrive on xargs'
+    input. Only for commands whose words are the files they change (_writes_paths): an
+    interpreter given `"$ID"` is not refused. MEASURED 2026-11-12 on 351 shell commands of real CTO
+    sessions: 21 of 31 `cd`s and 33 of 41 `git -C`s go through a variable set in the same line.
+
+    Known limits: what an interpreter's own script writes (python3 -c, a heredoc fed to python), a
+    script written to a file and then run, a function's body is read where it is defined, and a
+    variable set by `read` or in an earlier call is unknown."""
+    known, visited, ever, product_folder = {}, [], {"lost": False}, {}
+
+    def value(m):
+        name = m.group(1) or m.group(2)
+        return known[name] if name in known else [os.environ[name]] if name in os.environ else None
+
+    def expand(word):
+        """Every value this word can have, or None when part of it cannot be read."""
+        outs, pos = [""], 0
+        for m in _VAR.finditer(word):
+            vals = value(m)
+            if vals is None:
+                return None
+            outs = [o + word[pos:m.start()] + v for o in outs for v in vals]
+            pos = m.end()
+            if len(outs) > 64:
+                return None
+        outs = [o + word[pos:] for o in outs]
+        return None if any("$" in o or "`" in o for o in outs) else outs
+
+    def start_of(word):
+        """What can be read of a word that expand() cannot: its values up to the first unknown part."""
+        outs, pos = [""], 0
+        for m in list(_VAR.finditer(word)) + [None]:
+            text = word[pos:m.start() if m else len(word)]
+            cut = re.search(r"[$`]", text)
+            if cut:
+                return [o + text[:cut.start()] for o in outs]
+            outs = [o + text for o in outs]
+            vals = value(m) if m else None
+            if vals is None:
+                return outs
+            outs, pos = [o + v for o in outs for v in vals][:64], m.end()
+
+    def reach(bases, lost, start):
+        """For a path known only up to `start`: a product folder it is in, True when it could be
+        product code, False when its folder is outside the project or holds no product code.
+        `/tmp/out.$(date +%s).txt` is not a product file whatever the date is."""
+        folder = start[:start.rfind("/") + 1]
+        if not folder or (lost and not os.path.isabs(os.path.expanduser(folder))):
+            return True
+        for b in bases:
+            probe = str(_at(b, folder) / "x")
+            try:
+                loc = _locate(probe)
+            except Exception:
+                return True
+            if loc is None:
+                continue                                 # outside this repository
+            rel = os.path.dirname(loc[1])
+            if _product_file(probe):
+                return loc[0], rel + "/..."
+            if not rel or any(g.startswith(rel + "/") for g in _config.guarded()):
+                return True                              # product code lies under it
+        return False
+
+    def in_product(folder):
+        if folder not in product_folder:
+            product_folder[folder] = _product_file(str(folder)) is not None
+        return product_folder[folder]
+
+    def assign(word):
+        m = _ASSIGN.match(word)
+        if m:
+            vals = expand(m.group(2))
+            old = known.get(m.group(1), [])
+            known[m.group(1)] = None if vals is None or old is None else old + vals
+        return bool(m)
+
+    def stand(at, dirs, lost=False):
+        """The line now runs in `dirs` (more than one only when a variable has several values)."""
+        at["dirs"], at["lost"] = dirs, lost or at["lost"]
+        visited.extend(d for d in dirs if d not in visited)
+        ever["lost"] = ever["lost"] or at["lost"]
+
+    def move(at, word):
+        vals = expand(word)
+        if vals is None or len(at["dirs"]) * len(vals) > 32:
+            stand(at, at["dirs"], lost=True)
+        else:
+            stand(at, [Path(os.path.normpath(str(_at(d, v)))) for d in at["dirs"] for v in vals])
+
+    def one(at, blank, w, raw, text, strict, depth):
+        for x in raw:                                    # VAR=value in front of the command, or alone
+            if not assign(x):
+                break
+        if not w:
+            return None
+        verb = w[0]
+        if verb in DECLARE:
+            for x in w[1:]:
+                assign(x)
+            return None
+        if verb == "for" and len(w) > 3 and w[2] == "in":
+            vals = [expand(x) for x in w[3:]]
+            known[w[1]] = None if None in vals else [v for vs in vals for v in vs]
+            return None
+        if verb in ("cd", "pushd", "popd"):
+            to = [x for x in w[1:] if x == "-" or not x.startswith("-")]
+            was = (list(at["dirs"]), at["lost"])
+            if verb == "popd" or to[:1] == ["-"] or (verb == "pushd" and not to):
+                back = at["stack"].pop() if verb == "popd" and at["stack"] else at.get("old")
+                at["dirs"], at["lost"] = back if back else (at["dirs"], True)    # nowhere known to go back to
+                stand(at, at["dirs"])
+            else:
+                move(at, to[0] if to else str(Path.home()))
+            if verb == "pushd":
+                at["stack"].append(was)
+            at["old"] = was
+            return None
+        if verb == "find":                               # what -exec runs, on each place find starts from
+            starts = []
+            for x in w[1:]:
+                if x.startswith("-") or x in ("(", "!"):
+                    break
+                starts.append(x)
+            for j, x in enumerate(w):
+                if x in ("-exec", "-execdir", "-ok", "-okdir"):
+                    inner = []
+                    for y in w[j + 1:]:
+                        if y in ("+", ";") or y.startswith("-exec") or y.startswith("-ok"):
+                            break
+                        inner.append(y)
+                    for st in starts or ["."]:
+                        hit = walk(shlex.join([y.replace("{}", st) for y in inner]), strict, depth + 1,
+                                   at["dirs"], at["lost"])
+                        if hit:
+                            return hit
+        if verb == "xargs":
+            i, into = 1, ""
+            while i < len(w) and w[i].startswith("-"):
+                if w[i] in ("-I", "-J") and i + 1 < len(w):
+                    into = w[i + 1]
+                i += 2 if w[i] in XARGS_VALUE_OPTS + ("-J",) else 1
+            inner = [iw for _, iw, _ in _parts(shlex.join(w[i:])) if iw][:1]
+            if inner:
+                hit = walk(shlex.join(w[i:]), strict, depth + 1, at["dirs"], at["lost"])
+                if hit:
+                    return hit
+                iw = inner[0]
+                # cp -I{} {} dest/ names its destination; without -I what arrives is the last word
+                placed = iw[0] in COPY_VERBS and into and into not in iw[-1]
+                if strict and _writes_paths(iw) and not placed:
+                    return None, "the files arrive on xargs' input", _write_reason("", iw) or "it runs %s" % iw[0]
+            return None
+        why = _write_reason(blank, w)
+        if not why:
+            return None
+        bases, lost = at["dirs"], at["lost"]
+        if verb == "git":                                # git -C <dir> (each one relative to the last)
+            for i, x in enumerate(raw[:-1]):
+                if x == "-C":
+                    vals = expand(raw[i + 1])
+                    if vals is None:
+                        lost = True
+                    else:
+                        bases = [_at(b, v) for b in bases for v in vals]
+        written = _written(blank, w, text)
+        unsure = ""
+        for word in dict.fromkeys(_plain(w[2:] if verb == "git" else w[1:]) + written):
+            vals = expand(word)
+            if vals is None:
+                for start in start_of(word) if word in written else ():
+                    where = reach(bases, lost, start)
+                    if isinstance(where, tuple):
+                        return where + (why,)
+                    if where:
+                        unsure = unsure or ("%s is named through a variable or a command's output it "
+                                            "cannot read" % word)
+                continue
+            for v in vals:
+                if lost and word in written and not os.path.isabs(os.path.expanduser(v)):
+                    unsure = unsure or ("%s is relative to a folder it cannot follow (a cd or git -C through a "
+                                        "variable or a command's output it cannot read)" % v)
+                for b in bases:
+                    # Standing in a product folder, every word is a path inside it (`git commit -m msg`,
+                    # an awk script). Only a word the command writes, or a file that is there, counts.
+                    if word not in written and in_product(b) and not os.path.lexists(str(_at(b, v))):
+                        continue
+                    f = _product_file(str(_at(b, v)))
+                    if f:
+                        return f[0], f[1], why
+        return (None, unsure, why) if unsure and strict else None
+
+    def walk(text, strict, depth, dirs, lost):
+        if depth > 4:                                    # bash -c in bash -c in ...: not read, so not allowed
+            return (None, "it nests commands deeper than this check reads", "of what they may run") if strict else None
+        at = {"dirs": [], "lost": False, "stack": []}
+        stand(at, list(dirs), lost)
+        heredocs, scopes = [], []
+
+        def body(m):
+            head = text[text.rfind("\n", 0, m.start()) + 1:m.start()] + m.group(0).split("\n", 1)[0]
+            heredocs.append((m.group(3), any(w and w[0] in SHELLS for _, w, _ in _parts(head))))
+            return m.group(0).split("\n", 1)[0]
+        text = _HEREDOC.sub(body, text)
+        runs = []
+        if strict:
+            text, runs = _lift(text)
+            runs += [m.group(2) for m in _SH_C.finditer(text)] + [m.group(2) for m in _EVAL.finditer(text)]
+        for blank, w, raw, own, opens, closes in _parts_text(text):
+            scopes += [(list(at["dirs"]), at["lost"])] * opens
+            hit = one(at, blank, w, raw, own, strict, depth)
+            if hit:
+                return hit
+            for _ in range(closes):                      # a subshell ends: so does its cd
+                if scopes:
+                    at["dirs"], at["lost"] = scopes.pop()
+        # what these run is not placed in the line's order: judged from every folder the line visits
+        for sub in runs:
+            hit = walk(sub, strict, depth + 1, visited, ever["lost"])
+            if hit:
+                return hit
+        for sub, is_shell in heredocs:
+            # a heredoc fed to a shell runs; any other is text (a commit message, a script for an
+            # interpreter), read as before: only for a line that plainly writes a product file
+            hit = walk(sub, strict and is_shell, depth + 1, visited, ever["lost"])
+            if hit:
+                return hit
+        return None
+
+    return walk(cmd, True, 0, [Path(cwd)], False)
 
 
 def check_delegation(tool, ti):
@@ -667,27 +1079,32 @@ def check_delegation(tool, ti):
     if tool in ("Edit", "Write", "NotebookEdit", "MultiEdit"):
         hit = _product_file(str(ti.get("file_path") or ti.get("path") or ti.get("notebook_path") or ""))
     elif tool == "Bash":
-        for blank, w, raw in _parts(str(ti.get("command") or "")):
-            why = _write_reason(blank, w)
-            if why:
-                words = [x for r in raw for x in re.split(r"[<>|&]+", r) if x and not x.startswith("-")]
-                hit = next((f for f in (_product_file(x) for x in words[1:]) if f), None)
-                how = "would change, because %s," % why
-            if hit:
-                break
+        try:
+            found = shell_product_write(str(ti.get("command") or ""), CWD)
+        except Exception as e:                           # a guard that cannot decide refuses
+            found = (None, "the command could not be read (%s)" % type(e).__name__, "of what it may run")
+        if found:
+            hit, how = found[:2], "would change, because %s," % found[2]
     if not hit:
         return
     top, rel = hit
-    if subprocess.run([GIT, "-C", str(top), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
-                      capture_output=True).returncode == 0:
-        return
-    msg = ("This %s %s, product code. The owner's delegation policy (config.json delegation."
-           "cto_product_edits = %s) says product code reaches the project through cards." % (how, rel, policy))
+    card = ("Write a card for it: python3 .ai-teammates/hooks/card.py new <ID> --seat <seat> ..., then "
+            "seat.py run --card <ID> and seat.py land <ID>. Resolving a merge conflict is allowed.")
+    if top is None:
+        msg = ("This %s a file this check cannot place: %s. It cannot tell that the file is not product "
+               "code, and the owner's delegation policy (config.json delegation.cto_product_edits = %s) says "
+               "product code reaches the project through cards." % (how, rel, policy))
+        card = ("If the file is not product code, name it by its full path, with no variable, command "
+                "output or cd in front that this check cannot read. If it is product code: " + card)
+    else:
+        if subprocess.run([GIT, "-C", str(top), "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+                          capture_output=True).returncode == 0:
+            return
+        msg = ("This %s %s, product code. The owner's delegation policy (config.json delegation."
+               "cto_product_edits = %s) says product code reaches the project through cards." % (how, rel, policy))
     if policy == "ask":
         ask("delegation-policy", msg + " Approve to let the CTO write it itself this time.")
-    block("delegation-policy", msg,
-          "Write a card for it: python3 .ai-teammates/hooks/card.py new <ID> --seat <seat> ..., then "
-          "seat.py run --card <ID> and seat.py land <ID>. Resolving a merge conflict is allowed.")
+    block("delegation-policy", msg, card)
 
 
 # `git push`, also as `git -C dir push` / `git -c k=v push`.
