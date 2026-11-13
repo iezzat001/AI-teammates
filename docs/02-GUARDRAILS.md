@@ -141,6 +141,38 @@ Known limits: a script or interpreter run inside the framework checkout is not r
 framework is allowed), and nor is a `gh` action that names the repository with `--repo` from
 elsewhere; it would need a branch pushed from the checkout, which is blocked.
 
+### 11. The CTO does not write product code, by edit or by shell
+
+Product code (`config.json` `guarded_paths`) reaches the project through cards. `guard.py` blocks
+the CTO's own edits to it (`delegation-policy`) unless the owner set `delegation.cto_product_edits`
+to `ask` or `allow`. Resolving a conflict while a merge is in progress is exempt.
+
+A shell command counts when it writes (a redirect, `rm`, `cp`, `sed -i`, `git checkout`, an
+interpreter) and names a product file. The guard follows where the command runs: `cd`, `pushd`, a
+subshell that ends, `git -C`, the folder the session is already in, variables set earlier in the same
+line (`W=...; cd "$W"`), loop variables, and what `bash -c`, `eval`, `$(...)`, `find -exec` and
+`xargs` are told to run. A command inside `( )`, `{ }`, a function, a case arm, or after `then` or
+`do` is read like any other, and the product folder itself (`rm -rf src`) is product code.
+
+**A write it cannot place is refused.** That is a file named through a variable or a command's
+output it cannot read, a relative file after a `cd` it cannot follow, and files that arrive on
+`xargs`' input. It applies only to commands whose words are the files they change, so
+`python3 tool.py "$ID"` is not refused. The way through is to name the file by its full path. A path
+whose known start is outside the project, such as `/tmp/out.$(date +%s).txt`, is not refused.
+
+**Incident (2026-11-11):** the pilot project's CTO was blocked on a command that named a product
+file, and the same command went through after `cd` into the folder. It reported the gap and did not
+use it. Reproduced the next day: the rule resolved every path from the repository root, so twenty
+spellings of the same write passed (after `cd`, `git -C`, from inside the folder, in a group, after
+`then`, through `bash -c`, through a variable, by the folder's name). Measured on 351 shell commands
+of real CTO sessions, 21 of 31 `cd`s and 33 of 41 `git -C`s name the folder through a variable set in
+the same line, so the guard follows those and does not refuse them.
+
+Known limits: what an interpreter's own script writes is not read (`python3 -c`, a heredoc fed to
+`python3`), nor is a script written to a file and then run; a function's body is read where it is
+defined, not where it is called; a variable set by `read` or in an earlier command is unknown, so a
+write through it is refused.
+
 ---
 
 ## What runs, and when

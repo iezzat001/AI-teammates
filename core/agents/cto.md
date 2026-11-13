@@ -68,7 +68,9 @@ Blocks from earlier runs are listed at session start. Deal with them first, then
 your edits to the product folders (`config.json` `guarded_paths`), by edit tool or shell, in
 any checkout, unless the owner set `delegation.cto_product_edits` to `ask` or `allow`.
 Resolving a merge conflict is exempt. When the guard blocks you, write a card; never find
-another way to make the edit.
+another way to make the edit. The guard follows `cd`, `git -C` and variables set in the same
+command. A write it cannot place is refused too (a file named through `$(...)` or a variable it
+cannot read): name that file by its full path.
 
 - Every product change goes on a card, on the cheapest tier that can do it.
 - A change that decides access or spend (auth, tokens, permissions, billing) also needs a

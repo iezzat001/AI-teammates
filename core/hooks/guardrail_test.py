@@ -780,6 +780,105 @@ def check_guard():
                delegation_line("allow")[0] == "note" and delegation_line("block")[0] == "ok"
                and delegation_line("ask")[0] == "ok")
 
+        # WHERE A SHELL WRITE LANDS (issue #29). FOUND 2026-11-11 by the pilot project's CTO: blocked on a
+        # command that named a product file, the same command went through after `cd` into the folder
+        # (it reported this and did not use it). Reproduced 2026-11-12: the rule read a write only when
+        # its file was named by a path from the repository root in the first word's own arguments, so
+        # 20 other spellings of the same write passed. MEASURED on 351 shell commands of real CTO
+        # sessions: 21 of 31 `cd`s and 33 of 41 `git -C`s name the folder through a variable set
+        # earlier in the same command, so those are followed, not refused.
+        policy("block")
+        fs, fa = "../p-feat/src", str(feat)
+
+        def at(c, cwd):
+            """The verdict when the session is already in `cwd` (the hook payload says where)."""
+            q = subprocess.run([sys.executable, str(script)], cwd=dev_wt, env={**env, "CLAUDE_AGENT_NAME": "cto"},
+                               input=json.dumps({"tool_name": "Bash", "tool_input": {"command": c}, "cwd": str(cwd)}),
+                               capture_output=True, text=True)
+            return "block" if q.returncode == 2 else "ask" if '"ask"' in q.stdout else "allow"
+        spellings = [
+            ("after cd", f"cd {fs} && sed -i '' s/a/b/ a.ts"),
+            ("after cd, by a redirect", f"cd {fs} && echo x > a.ts"),
+            ("after pushd", f"pushd {fs} && rm a.ts && popd"),
+            ("after cd in a subshell", f"(cd {fs} && sed -i '' s/a/b/ a.ts)"),
+            ("git -C with the folder", f"git -C {fs} checkout -- a.ts"),
+            ("in a subshell", f"(sed -i '' s/a/b/ {fs}/a.ts)"),
+            ("in a brace group", f"{{ sed -i '' s/a/b/ {fs}/a.ts; }}"),
+            ("after then", f"if true; then sed -i '' s/a/b/ {fs}/a.ts; fi"),
+            ("after do", f"for n in 1; do rm {fs}/a.ts; done"),
+            ("in a function", f"f() {{ rm {fs}/a.ts; }}; f"),
+            ("in a case arm", f"case x in x) rm {fs}/a.ts;; esac"),
+            ("handed to bash -c", f"bash -c 'sed -i \"\" s/a/b/ {fs}/a.ts'"),
+            ("handed to bash -c, after cd", f"bash -c 'cd {fs} && sed -i \"\" s/a/b/ a.ts'"),
+            ("through a variable", f"F={fs}/a.ts; sed -i '' s/a/b/ $F"),
+            ("after cd to a variable", f"W={fa}; cd \"$W/src\" && rm a.ts"),
+            ("through a loop variable", f"for f in {fs}/*.ts; do sed -i '' s/a/b/ \"$f\"; done"),
+            ("through find -exec", f"find {fs} -name '*.ts' -exec sed -i '' s/a/b/ {{}} +"),
+            ("by --output=", f"sort --output={fs}/a.ts ../p-feat/docs/x.md"),
+            ("the product folder itself", f"rm -rf {fs}"),
+            ("the product folder itself, from git", "git -C ../p-feat checkout HEAD~1 -- src"),
+            ("to a new file in the product folder, its name partly a command's output",
+             f"echo x > {fs}/gen.$(date +%s).ts"),
+        ]
+        for desc, cmd in spellings:
+            got = bash(cmd)
+            (ok if got == "block" else bad)(f"guard: delegation: a product write {desc} is refused: {cmd} -> {got}")
+        expect("a product write from a session already in the product folder is refused (the payload's cwd)",
+               at("sed -i '' s/a/b/ a.ts", feat / "src") == "block" and at("echo x > a.ts", feat / "src") == "block")
+        # a guard that cannot decide refuses: a write whose folder or file it cannot read
+        for desc, cmd in [
+                ("after a cd it cannot follow", "cd \"$NOT_SET_ANYWHERE\" && sed -i '' s/a/b/ a.ts"),
+                ("after a cd to a command's output", "cd $(git rev-parse --show-toplevel)/src && rm a.ts"),
+                ("to a file named only by a variable it cannot read", "rm \"$NOT_SET_ANYWHERE\""),
+                ("to an unreadable name in a folder that holds product code", "rm \"../p-feat/$NOT_SET_ANYWHERE\""),
+                ("to files that arrive on xargs' input", f"grep -rl a {fs} | xargs sed -i '' s/a/b/")]:
+            got = bash(cmd)
+            (ok if got == "block" else bad)(f"guard: delegation: a write {desc} is refused: {cmd} -> {got}")
+        policy("ask")
+        expect("with ask, a product write after cd asks the owner", bash(f"cd {fs} && sed -i '' s/a/b/ a.ts") == "ask")
+        policy("allow")
+        expect("CONTROL: with allow, a product write after cd is the CTO's to make",
+               bash(f"cd {fs} && sed -i '' s/a/b/ a.ts") == "allow")
+        policy("block")
+        controls = [
+            ("reading after cd", f"cd {fs} && grep a a.ts"),
+            ("reading after cd, piped", f"cd {fs} && cat a.ts | head -3"),
+            ("reading after then", f"if true; then cat {fs}/a.ts; fi"),
+            ("a doc after cd", "cd ../p-feat/docs && sed -i '' s/a/b/ x.md"),
+            ("a doc after cd, by a redirect", "cd ../p-feat/docs && echo x > notes.md"),
+            ("a file here after a subshell that visited the product folder", f"(cd {fs} && ls); echo x > notes.md"),
+            ("git -C status", f"git -C {fa} status --short"),
+            ("git -C merge", f"git -C {fa} merge feat/y"),
+            ("a commit after cd to a variable", f"W={fa}; cd \"$W\" && git add docs/x.md && git commit -qm msg"),
+            ("git -C a variable, reading", f"W={fa}; git -C \"$W\" log --oneline -3"),
+            ("a temporary folder from mktemp", "T=$(mktemp -d); cp ../p-feat/docs/x.md \"$T\"/x.md; rm -rf \"$T\""),
+            ("a file outside the project after cd", "cd /tmp && echo x > note.txt"),
+            ("reading after a cd it cannot follow", "cd \"$NOT_SET_ANYWHERE\" && ls"),
+            ("a full path after a cd it cannot follow", "cd \"$NOT_SET_ANYWHERE\" && echo x > /tmp/note.txt"),
+            ("staging and committing the board", "git add . && git commit -qm board"),
+            ("removing a folder that is not product code", "rm -rf ../p-feat/docs"),
+            ("find -exec that reads", f"find {fs} -name '*.ts' -exec grep -l a {{}} +"),
+            ("xargs that reads", f"ls {fs} | xargs echo"),
+            ("a hook script given a variable", "python3 .ai-teammates/hooks/card.py show \"$NOT_SET_ANYWHERE\""),
+            ("sed -i on a doc with a variable in its script", "sed -i '' \"s|$NOT_SET_ANYWHERE|b|\" ../p-feat/docs/x.md"),
+            ("curl with a variable in a header", "curl -s -H \"Authorization: Bearer $NOT_SET_ANYWHERE\" "
+                                                 "https://example.com/api -o /tmp/out.json"),
+            # standing in the product folder, a commit message and a script are not files in it
+            ("a commit while standing in the product folder", f"cd {fs} && git commit -qm msg"),
+            ("a test run with its output kept, from the product folder", f"cd {fs} && npm test > /tmp/test.log"),
+            ("a file outside the project, its name partly a command's output", "echo x > /tmp/out.$(date +%s).txt"),
+            ("an unreadable name in a folder that holds no product code", "rm -f ../p-feat/docs/$NOT_SET_ANYWHERE.md"),
+            # a heredoc that is not fed to a shell is text: a commit message may quote a command
+            ("a commit message that quotes a command", "git commit -qF - <<'EOF'\nfix: `rm $x` handling\n\n"
+                                                       "install the hooks and patch $5\nEOF"),
+        ]
+        for desc, cmd in controls:
+            got = bash(cmd)
+            (ok if got == "allow" else bad)(f"guard: delegation: CONTROL: {desc} stays allowed: {cmd} -> {got}")
+        expect("CONTROL: a doc write from a session in the docs folder stays allowed",
+               at("sed -i '' s/a/b/ x.md", feat / "docs") == "allow")
+        policy("")
+
         # FRAMEWORK SOURCE: a project's agents do not change AI-teammates itself. FOUND 2026-10-29: the
         # pilot project's CTO, asked to fix a failing setup check, edited the framework's test in its
         # project copy, then read the framework repository's AGENTS.md and set out to branch and open a
