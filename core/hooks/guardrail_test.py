@@ -47,19 +47,26 @@ fails = []
 passes = [0]
 
 
+def _flat(msg) -> str:
+    """One check, one line. FOUND 2026-11-14 on a real install: a check whose description quoted a
+    multi-line command printed three lines; the launcher keeps every line that is not an `ok`, so
+    two stray lines of a PASSING check went into the CTO's brief among the failures."""
+    return " ⏎ ".join(str(msg).splitlines())
+
+
 def bad(msg):
-    fails.append(msg)
-    print(f"  FAIL  {msg}")
+    fails.append(_flat(msg))
+    print(f"  FAIL  {_flat(msg)}")
 
 
 def ok(msg):
     passes[0] += 1
-    print(f"  ok    {msg}")
+    print(f"  ok    {_flat(msg)}")
 
 
 def note(msg):
     """True and worth knowing, not a hole: printed (so the CTO's brief carries it), never counted."""
-    print(f"  note  {msg}")
+    print(f"  note  {_flat(msg)}")
 
 
 # --- when the self-test is due ----------------------------------------------------------------
@@ -1067,6 +1074,17 @@ elif mode == "edit_outside":
 elif mode == "write":
     for p, t in json.loads(os.environ["STUB_WRITES"]).items():
         open(p, "w").write(t); tool(p)
+elif mode in ("rm_edit", "rm_edit_blocked"):
+    # what a deletion card's seat does: git rm one file the card names, edit another
+    import subprocess
+    subprocess.run(["git", "rm", "-q", "src/b.txt"], capture_output=True)
+    open("src/a.txt", "a").write("fixed\n"); tool("src/a.txt")
+    if os.environ.get("STUB_SELF_CHECK"):                # ...and its sanctioned self-check
+        q = subprocess.run([sys.executable, os.path.join(os.environ["STUB_HOOKS"], "card.py"), "accept"],
+                           capture_output=True, text=True)
+        open(os.environ["STUB_SELF_CHECK"], "w").write("%d\n%s" % (q.returncode, q.stdout))
+    if mode == "rm_edit_blocked":
+        text = "BLOCKED: auth | log in to the staging service"
 elif mode == "blocked":
     text = "BLOCKED: auth | log in to the staging service"
 elif mode == "loop":
@@ -1335,6 +1353,41 @@ def check_cards():
                rc == 1 and "FAIL" in out and "NEVER" in out)
         expect("guard: an unreadable card means no edits (fails closed)",
                scope(f"{wt2}/src/a.txt", card="/nonexistent/card.json") == 2)
+
+        # A CARD THAT DELETES A FILE AND EDITS ANOTHER (issue #31). FOUND 2026-11-15 on a real card run:
+        # the seat deleted two pages with git rm and edited two files, all correct; its self-check failed
+        # a test that read the staged diff, it tried a command it may not run, and the run ended blocked.
+        # The card's files were staged with one `git add`; a path removed with git rm is in neither the
+        # worktree nor the index, so git exits 128 and stages NOTHING. Three places did that.
+        both = {"scope": {"edit": ["src/a.txt", "src/b.txt"]}, "steps": ["delete src/b.txt", "fix src/a.txt"]}
+        gone = {"run": "test ! -e src/b.txt", "why": "b.txt is deleted"}
+        said = {"run": "grep -q fixed src/a.txt", "why": "a.txt says fixed"}
+        seen = Path(td) / "self-check.txt"
+        mk("T-14", acceptance=[gone, said, {"run": "git diff --quiet -- src/a.txt", "why": "the edit is staged"}], **both)
+        p, r = go("T-14", "rm_edit", STUB_HOOKS=str(hooks), STUB_SELF_CHECK=str(seen))
+        sc = seen.read_text() if seen.exists() else "no self-check ran"
+        expect("the seat's self-check passes on a card that deleted one file and edited another: the edit is "
+               f"staged for its tests (got: {' / '.join(sc.split())[:90]})", sc.startswith("0\n") and "3/3" in sc)
+        mk("T-15", acceptance=[gone, said], **both)
+        p, r = go("T-15", "rm_edit")
+        wt15 = Path(td) / "proj-card-t-15"
+        expect("such a run ends done with BOTH files in the seat's commit, not only the deletion "
+               f"(got {r and r['status']}, files {r and r['files']})",
+               r and r["status"] == "done" and r["files"] == ["src/a.txt", "src/b.txt"]
+               and "fixed" in g("show", "HEAD:src/a.txt", cwd=wt15).stdout
+               and g("cat-file", "-e", "HEAD:src/b.txt", cwd=wt15).returncode != 0
+               and not g("status", "--porcelain", "--", "src", cwd=wt15).stdout.strip())
+        mk("T-16", acceptance=[gone, said], **both)
+        go("T-16", "rm_edit_blocked")
+        go("T-16", "rm_edit")
+        tag = g("tag", "-l", "archive/feat/t-t-16-*").stdout.split()
+        expect("archiving that unfinished attempt keeps the edit on the tag as well as the deletion",
+               bool(tag) and "fixed" in g("show", f"{tag[0]}:src/a.txt").stdout
+               and g("cat-file", "-e", f"{tag[0]}:src/b.txt").returncode != 0)
+        mk("T-17", **both)
+        p, r = go("T-17", "edit_ok")
+        expect("CONTROL: a card that names a file its seat never touched still runs to done with what changed",
+               r and r["status"] == "done" and r["files"] == ["src/a.txt"])
 
         # PLANS (issue #1): the plan for a big task lives in a parent card, not only in the CTO's context.
         # FOUND 2026-10-17: three cards for one outcome were linked only by board prose, and nothing refused a card

@@ -520,6 +520,20 @@ def render(card: dict) -> str:
     return "\n".join(out)
 
 
+def stage(paths, wt) -> None:
+    """Stage what changed under each of these paths in the worktree, deletions included.
+
+    One path per `git add`, on purpose. FOUND 2026-11-15 on a real card run (issue #31): the card's
+    files were staged with a single `git add -A -- <all of them>`. A file the seat removed with
+    `git rm` is in neither the worktree nor the index, so git exits 128 (pathspec did not match any
+    files) and stages NOTHING, and the error was discarded. The seat's self-check then failed a test
+    that read the staged diff, on correct work; the runner could commit the deletion without the
+    edits; an archived attempt kept the deletion and lost the edits. A path that matches nothing
+    (already staged as deleted, or never touched) must not stop the others."""
+    for p in paths:
+        subprocess.run([_config.GIT, "add", "-A", "--", p], cwd=str(wt), capture_output=True)
+
+
 def run_acceptance(card: dict, wt: Path) -> list:
     """Execute each acceptance command in the worktree. Exit 0 = pass. Executed, not
     asserted: the seat's own report that it is done is not evidence."""
@@ -575,7 +589,7 @@ def main(argv) -> int:
             print(f"  accept: no card to check ({type(e).__name__}: {e}). Pass an ID, or run it inside a card run.")
             return 2
         # acceptance may look at the staged diff, which the runner stages for it: do the same
-        subprocess.run([_config.GIT, "add", "-A", "--", *edit_scope(c)], capture_output=True)
+        stage(edit_scope(c), Path.cwd())
         results = run_acceptance(c, Path.cwd())
         for a in results:
             print(f"  {'PASS' if a['rc'] == 0 else 'FAIL'}  {a['run'][:100]}" + ("" if a['rc'] == 0 else f"\n        {a['tail'][-160:]}"))

@@ -187,6 +187,15 @@ without its fix:
 
 ### Fixed
 
+- A card that deleted a file with `git rm` and edited another lost the edit wherever the card's
+  files were staged (#31). All of them went to one `git add`; the deleted path matches nothing, so
+  git staged nothing and the error was discarded. The seat's self-check (`card.py accept`) failed
+  any test that read the staged diff, on correct work; a run could end `done` with only the
+  deletion committed; an archived attempt kept the deletion and dropped the edits. Each path is
+  now staged by itself.
+- A check whose description spans lines prints as one line. Two stray lines of a passing check
+  were reaching the CTO's brief among the pre-flight failures.
+
 - `seat.py land` refused a card right after running it on a real install: the runner works in the
   integration checkout and leaves its own record there uncommitted (the board note, now the card
   file too), and `land` refused any uncommitted change. The session record no longer counts; any
