@@ -211,7 +211,7 @@ def archive(wt: Path, branch: str, scope=None) -> str:
     point at a branch with none of it and `worktree remove --force` would silently drop
     it. FOUND on the DOC-2 pilot: a correct blocked attempt would have been lost."""
     if wt.exists() and scope:
-        git("add", "-A", "--", *scope, cwd=wt)
+        cardmod.stage(scope, wt)
         if git("diff", "--cached", "--name-only", cwd=wt).stdout.strip():
             git("-c", "user.name=seat:archive", "-c", "user.email=archive@seat.local", "commit", "-q",
                 "-m", "WIP: unfinished card attempt, archived before a re-run", cwd=wt)
@@ -443,8 +443,7 @@ def run(agents: dict, cid: str, seat_name: str = "") -> int:
             status, reason = ("done", "") if text.strip() else ("failed", "no report returned")
         else:
             new = sorted(p for p in porcelain_paths(wt) if p not in baseline)
-            if new:
-                git("add", "--", *new, cwd=wt)
+            cardmod.stage(new, wt)      # one path at a time: a file removed with git rm matches nothing
             changed = sorted(l for l in git("diff", "--cached", "--name-only", cwd=wt).stdout.splitlines() if l)
             stat = git("diff", "--cached", "--shortstat", cwd=wt).stdout.strip()
             outside = [p for p in changed if not cardmod.allowed_edit(card, p)]
