@@ -1,5 +1,10 @@
 # Guardrails
 
+**SUPERSEDED 2026-11-26.** Codex CLI also provides pre-tool hooks. The guard understands
+native `apply_patch` input and checks all files in a patch, including both paths of a rename.
+It refuses patches whose paths it cannot determine. The current installer registers Claude
+Code hooks. See the [Codex cutover status](04-ROUTING.md#codex-cli-migration).
+
 Every rule here exists because something broke. The incident is named so you can
 judge whether the rule applies to your project — and delete it if it does not.
 
