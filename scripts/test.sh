@@ -16,6 +16,8 @@ cleanup() { [ -n "${KEEP:-}" ] && echo "kept: $WORK" || rm -rf "$WORK"; }
 trap cleanup EXIT
 
 REAL_HOME="$HOME"
+# Both settings can otherwise select the owner's real CLI or account in this fake HOME.
+unset AI_TEAMMATES_CODEX_BIN CODEX_HOME
 export HOME="$WORK/home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 mkdir -p "$HOME" "$WORK/bin"
 # MemPalace's vector store keeps its embedding model (~80 MB) under ~/.cache/chroma. With a fresh
