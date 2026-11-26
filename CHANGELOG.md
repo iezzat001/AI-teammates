@@ -8,7 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
-- Preview the proposed Codex model and reasoning level for the CTO, a card tier or a stored card
+- Run the CTO and seats on Codex CLI. The CTO uses Astra xhigh and worker cards route to Luna low or Sol medium/high.
+- Replace USD limits with supervised time and cumulative token caps, atomic daily reservations, and usage reports (#35).
+- Inspect the configured Codex model and reasoning level for the CTO, a card tier or a stored card
   with `seat.py route`. Use `--verify` to check the selected CLI's model catalog (#33).
 - The pre-tool guard checks each path in native Codex patches and protects Codex hook configuration.
 
@@ -16,7 +18,7 @@ All notable changes to this project are documented here. The format follows
   project from anywhere (`ai-teammates install <project>` too), and a first install from a terminal
   goes straight on into `cto setup`. `install.sh <project> --yes` or `--answers file.json` runs the
   setup without asking; `--no-setup` only installs.
-- `cto setup` asks more, and finishes the job (#18). **Tool and plan:** it checks that Claude Code
+- **SUPERSEDED 2026-11-26 for model selection and spending.** `cto setup` asks more, and finishes the job (#18). **Tool and plan:** it checks that Claude Code
   is installed and signed in and asks whether it is a subscription or API billing (`cto.billing`;
   `seat.py report --cost` says whether its dollars are an estimate or money). **Team:** the CTO's
   effort. **Spend:** `budget.daily_usd` and `cards.default_usd`. **Workspace:** it lists branches
@@ -26,7 +28,7 @@ All notable changes to this project are documented here. The format follows
   protected branches and the remote are never touched. Then it commits the install and creates
   the integration branch with its checkout at `../<project>-dev`. An answer about the plan or the
   spend that cannot be right is refused before anything is written.
-- **Cost on the card, and caps (#16).** A card has `budget.usd`, set by the CTO: Claude Code stops
+- **SUPERSEDED 2026-11-26. Historical dollar caps (#16).** A card has `budget.usd`, set by the CTO: Claude Code stops
   the run there (`--max-budget-usd`) and the run ends `over_budget`, with nothing committed.
   `card.py check` refuses a cap above the owner's maximum for one run (`cards.max_usd`, 5; default
   cap `cards.default_usd`, 1). `budget.daily_usd` in `config.json` (20; `0` for none): a card that

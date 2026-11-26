@@ -28,6 +28,7 @@ child cards ("parent": "<ID>", "depends_on": [<sibling IDs whose merged work it 
 `card.py new <ID> --parent <PARENT>` links both sides.
 """
 import json
+import math
 import os
 import re
 import shlex
@@ -49,15 +50,13 @@ LIMITS = {
     "max_tool_calls": 60,
     "default_minutes": 15,
     "default_tool_calls": 40,
-    # Money. Claude Code stops a run at its cap itself (--max-budget-usd); on a subscription the
-    # figure is its own estimate of what the run would cost, and it counts against the plan's limit.
-    "default_usd": 1.0,         # what a card may spend when it does not say
-    "max_usd": 5.0,             # the most one run may spend; more than this is two cards, or a cheaper tier
+    "default_tokens": 100_000,
+    "max_tokens": 500_000,
     "idle_minutes": 10,
     "acceptance_timeout": 300,
 }
 # A seat never edits the rails it runs inside.
-FORBIDDEN_EDIT = (".ai-teammates/", ".claude/", ".git/")
+FORBIDDEN_EDIT = (".ai-teammates/", ".claude/", ".codex/", ".git/")
 SECRETISH = re.compile(r"(^|/)(\.env[^/]*|[^/]*(secret|credential)[^/]*|id_rsa[^/]*)$", re.I)
 
 
@@ -89,7 +88,7 @@ def budget(card: dict) -> dict:
     L, b = limits(), card.get("budget") or {}
     return {"minutes": b.get("minutes", L["default_minutes"]),
             "tool_calls": b.get("tool_calls", L["default_tool_calls"]),
-            "usd": b.get("usd", L["default_usd"])}
+            "tokens": b.get("tokens", L["default_tokens"])}
 
 
 def record_run(cid: str, run: dict) -> None:
@@ -101,7 +100,7 @@ def record_run(cid: str, run: dict) -> None:
     try:
         card = load(cid)
         card.setdefault("runs", []).append(run)
-        card["spent_usd"] = round(sum(r.get("cost_usd") or 0 for r in card["runs"]), 4)
+        card["spent_tokens"] = sum(sum((r.get("tokens") or {}).get(k, 0) for k in ("in", "out")) for r in card["runs"])
         save(card)
     except Exception as e:
         print(f"  note: the run could not be recorded on card {cid} ({type(e).__name__}: {e})")
@@ -347,7 +346,7 @@ def split(cid: str, into: list, files=None, independent: bool = False) -> int:
             or [{"run": "<command that exits 0 when this piece is done>", "why": "<what it proves>"}],
             "allow": c.get("allow") or [],
             "budget": {"minutes": min(b["minutes"], L["max_minutes"]), "tool_calls": min(b["tool_calls"], L["max_tool_calls"]),
-                       "usd": min(b["usd"], L["max_usd"])},
+                       "tokens": min(b["tokens"], L["max_tokens"])},
             "out_of_scope": c.get("out_of_scope") or [], "stop_and_ask": c.get("stop_and_ask") or [],
         }
     parent = {**c, "children": list(into)}
@@ -443,16 +442,14 @@ def validate(card: dict, expect_id: str = "") -> list:
     if len(mem) > L["max_memory_chars"]:
         bad.append(f"memory slice is {len(mem)} chars (max {L['max_memory_chars']}): "
                    "keep only what this one task needs")
-    b = card.get("budget") or {}
-    if b.get("minutes", 0) > L["max_minutes"]:
-        bad.append(f"budget over {L['max_minutes']} minutes: split the card")
-    if b.get("tool_calls", 0) > L["max_tool_calls"]:
-        bad.append(f"budget over {L['max_tool_calls']} tool calls: split the card")
-    usd = b.get("usd", L["default_usd"])
-    if not isinstance(usd, (int, float)) or isinstance(usd, bool) or usd <= 0:
-        bad.append("budget.usd must be a number above 0: what this run may spend, in dollars")
-    elif usd > L["max_usd"]:
-        bad.append(f"budget over ${L['max_usd']:g} for one run: split the card, or give it a cheaper tier")
+    for key in ("minutes", "tool_calls", "tokens"):
+        val = budget(card)[key]
+        top = L["max_" + key]
+        if (type(val) not in (int, float) or not math.isfinite(val) or val <= 0
+                or (key != "minutes" and type(val) is not int)):
+            bad.append(f"budget.{key} must be positive and finite (whole counts for tokens and tool calls)")
+        elif val > top:
+            bad.append(f"budget over {top:g} {key}: split the card")
 
     return bad + holes(card) + plan_problems(card)
 
@@ -503,7 +500,7 @@ def render(card: dict) -> str:
     if card.get("out_of_scope"):
         out += ["", "NOT YOUR JOB:"] + [f"  - {s}" for s in card["out_of_scope"]]
     out += ["", "RULES",
-            f"  - Budget: about {b['minutes']} minutes, {b['tool_calls']} tool calls and ${b['usd']:g}. "
+            f"  - Budget: about {b['minutes']} minutes, {b['tool_calls']} tool calls and {b['tokens']} tokens. "
             "A small task should not need it; the run is stopped when any of them runs out.",
             "  - Edits outside the files above are denied, and so is any command not listed under COMMANDS YOU MAY RUN "
             "(none listed = none allowed). A refusal is not an error to fix: do not retry or rephrase it.",
@@ -562,7 +559,7 @@ def template(cid: str, seat: str, tier: str, title: str, goal: str) -> dict:
         "acceptance": [{"run": "<command that exits 0 when done>", "why": "<what it proves>"}],
         "allow": [],
         "budget": {"minutes": limits()["default_minutes"], "tool_calls": limits()["default_tool_calls"],
-                   "usd": limits()["default_usd"]},
+                   "tokens": limits()["default_tokens"]},
         "out_of_scope": ["<what a helpful agent might be tempted to also do>"],
         "stop_and_ask": [],
     }
@@ -670,7 +667,7 @@ def main(argv) -> int:
             return 1
         b = budget(c)
         print(f"  card {argv[1]} ok · {len(edit_scope(c))} file(s) in scope · {len(c.get('acceptance') or [])} "
-              f"acceptance · tier {c.get('tier', 'standard')} · {b['minutes']} min / {b['tool_calls']} calls / ${b['usd']:g}")
+              f"acceptance · tier {c.get('tier', 'standard')} · {b['minutes']} min / {b['tool_calls']} calls / {b['tokens']} tokens")
         return 0
     print(__doc__)
     return 0

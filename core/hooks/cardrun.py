@@ -14,10 +14,10 @@ to a board card, reused one scratch worktree forever, and could not stop a run.
 A card run is judged by what can be checked, not by what the seat says:
 
   before spending anything   the card must validate (size gate), the seat must exist
-  during the run             Claude Code seat, hooks live: edits outside the card's
+  during the run             Codex seat, trusted hooks: edits outside the card's
                              scope are denied (guard.py), a human-only blocker ends
                              the run (loopguard.py), and this watchdog enforces the
-                             card's wall-time and tool-call budget
+                             card's elapsed-time, token and tool-call caps
   after the run              changed files are computed from git, compared to the
                              scope, every acceptance command is EXECUTED, and only
                              then is the work committed
@@ -41,28 +41,17 @@ import _config  # noqa: E402
 import board  # noqa: E402
 import card as cardmod  # noqa: E402
 import loopguard  # noqa: E402
+import codex_session
+import codex_runtime
+import run_budget
 import seat  # noqa: E402
 from activity import scrub  # noqa: E402
 
 REPO = seat.REPO
 GIT = seat.GIT_BIN
 BASE = seat.BASE
-# The test suite points this at a stub so the whole pipeline runs without a model.
-CLAUDE = os.environ.get("AI_TEAMMATES_CLAUDE_BIN", "claude")
-
-# Verified to resolve through `claude --model` on 2026-10-04, with the cost of a one-word reply:
-# Haiku 4.5 $0.058, Sonnet 5.5 $0.082, Opus 5.5 $0.163 (the 5.0 models they replace: Sonnet 5
-# $0.13, Opus 5 $0.21, so the newer ones are also cheaper). Override in config.json "seat_models".
-# MEASURED 2026-11-11, one-word reply, same flags: claude-haiku-5-5 resolves and cost $0.079, where
-# Haiku 4.5 cost $0.016. `mechanical` is the cheapest model that can do a rename, so it stays 4.5.
-DEFAULT_MODELS = {"mechanical": "claude-haiku-4-5-20251001",
-                  "standard": "claude-sonnet-5-5",
-                  "hard": "claude-opus-5-5"}
-EXIT = {"done": 0, "blocked": 75}      # anything else exits 1
-# What Claude Code reports when --max-budget-usd stopped the run. Read from one real call on
-# 2.1.285 (2026-11-10): {"subtype": "error_max_budget_usd", "is_error": true,
-# "terminal_reason": "budget_exhausted", "total_cost_usd": ...}, exit 1.
-BUDGET_STOP = ("error_max_budget_usd", "budget_exhausted")
+DEFAULT_MODELS = {tier: model for tier, (model, _) in codex_runtime.ROUTES.items() if tier != "cto"}
+EXIT = {"done": 0, "blocked": 75}
 BLOCKED_LINE = re.compile(r"^\s*BLOCKED:\s*([\w:.-]+)\s*\|\s*(.+?)\s*$", re.M)
 
 
@@ -72,60 +61,6 @@ def git(*args, cwd=None):
 
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
-
-
-def model_for(card: dict, spec: dict) -> str:
-    if card.get("model"):
-        return card["model"]
-    tiers = {**DEFAULT_MODELS, **(_config.load().get("seat_models") or {})}
-    return tiers.get(card.get("tier") or "standard") or spec.get("model") or DEFAULT_MODELS["standard"]
-
-
-def card_command(spec: dict, card: dict, prompt: str, model: str) -> list:
-    """The exact argv a seat is launched with. Built here, not templated in a spec, so
-    the permission posture cannot drift away from what guardrail_test asserts."""
-    b = cardmod.budget(card)
-    read_only = spec.get("read_only") == "true" or bool(card.get("read_only"))
-    base = spec.get("allow") or ("Read,Glob,Grep" if read_only else "Read,Glob,Grep,Edit,Write")
-    allow = [t.strip() for t in base.split(",") if t.strip()] + list(card.get("allow") or [])
-    if not read_only:
-        # the sanctioned self-check: runs the card's own acceptance commands (card.py accept)
-        allow.append("Bash(python3 .ai-teammates/hooks/card.py accept:*)")
-        # deleting a file the card names (guard.py refuses any file outside the card)
-        allow.append("Bash(git rm:*)")
-    # Offered = allowed. MEASURED 2026-10-06: a session is offered 24 built-in tools plus a skill
-    # and a subagent listing by default (26.6k tokens on a one-word Opus call; 9.9k with a named set);
-    # a seat uses a handful, and a narrow junior is better off not reading the rest.
-    tools = list(dict.fromkeys(t.split("(", 1)[0].strip() for t in allow if t.strip()))
-    return [CLAUDE, "-p", prompt, "--model", model,
-            "--tools", ",".join(tools),
-            # Turns are not the budget (a tool call is not a turn); the watchdog counts
-            # calls. This is only a backstop against a model that talks forever.
-            "--max-turns", str(int(b["tool_calls"]) + 10),
-            # The card's money: Claude Code stops the run itself when it is spent (issue #16).
-            "--max-budget-usd", f"{float(b['usd']):g}",
-            "--permission-mode", "plan" if read_only else "acceptEdits",
-            "--permission-prompts", "none",
-            "--output-format", "stream-json", "--verbose",
-            # No user plugins, user hooks or MCP servers: a seat sees the card and
-            # nothing else. Memory reaches it only as the slice the CTO put on the card.
-            "--setting-sources", "project,local", "--strict-mcp-config",
-            "--allowedTools", ",".join(allow)]   # variadic: keep it last
-
-
-# --- money ----------------------------------------------------------------------------
-
-def tokens(res) -> dict:
-    """{"in", "out"} for a run, from the per-model usage Claude Code reports with its result.
-    "in" counts cached input too: it is what the model read. (The top-level `usage` of a run that
-    ended in an error is all zeros; `modelUsage` is not.)"""
-    out = {"in": 0, "out": 0}
-    for u in ((res or {}).get("modelUsage") or {}).values():
-        if isinstance(u, dict):
-            out["in"] += sum(int(u.get(k) or 0) for k in ("inputTokens", "cacheReadInputTokens",
-                                                          "cacheCreationInputTokens"))
-            out["out"] += int(u.get("outputTokens") or 0)
-    return out
 
 
 def local_day(ts: str) -> str:
@@ -145,23 +80,6 @@ def run_rows() -> list:
             except ValueError:
                 continue
     return rows
-
-
-def spent_on(day: str) -> float:
-    return sum(r.get("cost_usd") or 0 for r in run_rows() if local_day(r.get("ts")) == day)
-
-
-def over_daily_budget(cid: str, cap: float) -> str:
-    """Why this card may not be launched today, or "". The budget across runs is the owner's
-    (config.json budget.daily_usd): one card's cap bounds one run, and nothing bounded the day."""
-    daily = _config.daily_budget()
-    if not daily:
-        return ""
-    spent = spent_on(datetime.now().astimezone().strftime("%Y-%m-%d"))
-    if spent + cap <= daily:
-        return ""
-    return (f"today's card runs have cost ${spent:.2f} of the ${daily:.2f} daily budget, and card {cid} "
-            f"may spend up to ${cap:g}")
 
 
 # --- worktree -------------------------------------------------------------------------
@@ -262,78 +180,6 @@ def run_setup(wt: Path) -> str:
     return ""
 
 
-# --- supervised run -----------------------------------------------------------------------
-
-def _summ(name: str, ti: dict) -> str:
-    ti = ti or {}
-    if name == "Bash":
-        return scrub(" ".join((ti.get("command") or "").split()))[:70]
-    for k in ("file_path", "path", "pattern", "notebook_path"):
-        if ti.get(k):
-            return str(ti[k]).replace(str(REPO.parent) + "/", "")[:70]
-    return ""
-
-
-def _kill(proc):
-    try:
-        os.killpg(proc.pid, signal.SIGTERM)
-        try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        pass
-
-
-def supervise(cmd, wt, env, minutes, max_calls, idle_s):
-    """Run the seat in its own process group and enforce its budget. Python, because
-    macOS has no `timeout`; and a group, because the harness spawns children."""
-    proc = subprocess.Popen(cmd, cwd=str(wt), env=env, stdin=subprocess.DEVNULL,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                            bufsize=1, start_new_session=True)
-    st = {"lines": [], "err": [], "tools": 0, "last": time.time(), "result": None, "text": ""}
-
-    def pump():
-        for line in proc.stdout:
-            st["last"] = time.time()
-            st["lines"].append(line)
-            try:
-                e = json.loads(line)
-            except ValueError:
-                continue
-            if e.get("type") == "assistant":
-                for blk in (e.get("message") or {}).get("content") or []:
-                    if blk.get("type") == "tool_use":
-                        st["tools"] += 1
-                        print(f"    -> {blk.get('name')} {_summ(blk.get('name'), blk.get('input'))}", flush=True)
-                    elif blk.get("type") == "text" and blk.get("text"):
-                        st["text"] = blk["text"]
-            elif e.get("type") == "result":
-                st["result"] = e
-
-    threads = [threading.Thread(target=pump, daemon=True),
-               threading.Thread(target=lambda: st["err"].extend(proc.stderr), daemon=True)]
-    for t in threads:
-        t.start()
-    t0, reason = time.time(), ""
-    while proc.poll() is None:
-        time.sleep(0.4)
-        if time.time() - t0 > minutes * 60:
-            reason = f"over its {minutes:g} minute budget"
-        elif st["tools"] > max_calls:
-            reason = f"over its {max_calls} tool-call budget"
-        elif time.time() - st["last"] > idle_s:
-            reason = f"idle for {idle_s / 60:g} minutes"
-        if reason:
-            _kill(proc)
-            break
-    rc = proc.wait()
-    for t in threads:
-        t.join(timeout=5)
-    st.update(rc=rc, reason=reason)
-    return st
-
-
 # --- the run -----------------------------------------------------------------------------
 
 def run(agents: dict, cid: str, seat_name: str = "") -> int:
@@ -361,37 +207,39 @@ def run(agents: dict, cid: str, seat_name: str = "") -> int:
     spec = agents.get(name)
     if not spec:
         sys.exit(f"unknown seat '{name}'. try: {', '.join(agents) or 'none'}")
-    if spec.get("harness") != "claude-code":
-        sys.exit(f"seat '{name}' runs on '{spec.get('harness')}'. Cards run on Claude Code seats: "
+    if spec.get("harness") != "codex":
+        sys.exit(f"seat '{name}' runs on '{spec.get('harness')}'. Cards run on Codex CLI seats: "
                  f"that is where scope, loop and budget are enforced during the run.")
     read_only = spec.get("read_only") == "true" or bool(card.get("read_only"))
     if not read_only and spec.get("writes") != "true":
         sys.exit(f"seat '{name}' is not marked `writes: true` in its spec, and the card changes files.")
     seat.assert_not_running(name)
 
-    model = model_for(card, spec)
+    model, effort = codex_runtime.card_route(card)
+    codex_runtime.verify(model, effort, codex_runtime.catalog())
     b = cardmod.budget(card)
-    broke = over_daily_budget(cid, float(b["usd"]))
-    if broke:
-        # Not launched, nothing spent. The owner's to decide, so it is recorded like any other ask
-        # only a human can answer, and reaches their next session.
-        need = (f"raise budget.daily_usd in .ai-teammates/config.json (or run: cto setup), "
-                f"or lower card {cid}'s budget.usd, or wait until tomorrow")
+    try:
+        with run_budget.reserve(cid, model, b) as usage:
+            return _run_card(card, spec, cid, name, model, effort, b, read_only, usage)
+    except run_budget.DailyLimit as e:
+        need = "reduce the card budget, wait until tomorrow, or ask the owner to change the daily time/token limits"
         loopguard.resolve_card(cid)
-        loopguard.make_record(f"budget-{cid}", {}, "budget", "human", broke, tried=[], need=need,
-                              card=cid, who="cto")
-        print(f"  card {cid} was not launched: {broke}.\n  BLOCKED: budget | {need}")
+        loopguard.make_record(f"budget-{cid}", {}, "budget", "human", str(e), tried=[], need=need, card=cid, who="cto")
+        print(f"  card {cid} was not launched: {e}. BLOCKED: budget | {need}")
         return EXIT["blocked"]
+
+
+def _run_card(card, spec, cid, name, model, effort, b, read_only, usage):
     wt = make_worktree(spec, cid, card)
     br = card_branch(spec, cid)
     started = now_iso()
     t0 = time.time()
     board.set_state(cid, "doing")
     print(f"  card    {cid}: {card.get('title') or card['goal'][:60]}\n  seat    {spec.get('seat', name)} · {model}"
-          f"\n  cwd     {wt}\n  budget  {b['minutes']:g} min / {b['tool_calls']} tool calls / ${float(b['usd']):g}\n")
+          f"\n  cwd     {wt}\n  budget  {b['minutes']:g} min / {b['tool_calls']} tool calls / {b['tokens']} tokens\n")
     loopguard.resolve_card(cid)             # re-running a blocked card means the human dealt with it
 
-    status, reason, rc, res, text, tools = "failed", "", 1, None, "", 0
+    status, reason, rc, text, tools = "failed", "", 1, "", 0
     denied = []
     changed, stat, acc, head = [], "", [], ""
     setup_err = run_setup(wt)
@@ -404,10 +252,13 @@ def run(agents: dict, cid: str, seat_name: str = "") -> int:
         env.update(CLAUDE_AGENT_NAME=name, AI_TEAMMATES_SEAT=spec.get("seat", name),
                    AI_TEAMMATES_CARD=str(cardmod.path(cid)), AI_TEAMMATES_HEADLESS="1")
         env["PATH"] = _config.tool_path(env.get("PATH", ""))    # the user's own tools (issue #19)
-        st = supervise(card_command(spec, card, cardmod.render(card), model), wt, env,
-                       b["minutes"], b["tool_calls"], cardmod.limits()["idle_minutes"] * 60)
-        rc, res, tools, lines, err = st["rc"], st["result"], st["tools"], st["lines"], st["err"]
-        text = (res or {}).get("result") or st["text"] or ""
+        usage["started_turn"] = True
+        usage.update(codex_session.run(wt, env, model, effort, cardmod.render(card), read_only, b,
+                                       idle_seconds=cardmod.limits()["idle_minutes"] * 60))
+        rc = 0 if usage["status"] == "done" else 1
+        text, tools = usage["text"], usage["tools"]
+        lines.append(text)
+        err.append(usage["reason"])
         # An interrupted or killed run has no final text: the hook's record has the ask.
         mine = [d for d in loopguard.unresolved(since=started) if d.get("card") == cid]
         sentinel = BLOCKED_LINE.search(text)
@@ -415,19 +266,11 @@ def run(agents: dict, cid: str, seat_name: str = "") -> int:
         # DOC-2 pilot: a seat finished correctly, then tried an optional self-check it was
         # not allowed to run; calling that "blocked" threw away a correct result. What
         # decides is the run: it said BLOCKED, it was interrupted/failed, or it ended well.
-        abnormal = rc != 0 or res is None or bool(res.get("is_error"))
+        abnormal = rc != 0
         denied = [d["evidence"].replace("approval needed for: ", "") for d in mine]
 
-        if st["reason"]:
-            status, reason = "timeout", f"killed: {st['reason']}"
-        elif res and (res.get("subtype") in BUDGET_STOP or res.get("terminal_reason") in BUDGET_STOP):
-            # Claude Code stopped it at the card's cap. The work is unfinished by definition:
-            # nothing is committed, and the money already spent is on the card.
-            spent = res.get("total_cost_usd")
-            status = "over_budget"
-            reason = (f"stopped at the card's cap of ${float(b['usd']):g}"
-                      + (f" (spent ${spent:.3f})" if isinstance(spent, (int, float)) else "")
-                      + ": split the card, give it a cheaper tier, or raise budget.usd within the owner's maximum")
+        if usage["status"] in ("timeout", "over_budget"):
+            status, reason = usage["status"], usage["reason"]
         elif sentinel or (mine and abnormal):
             status = "blocked"
             reason = (f"{sentinel.group(1)} | {sentinel.group(2)}" if sentinel
@@ -437,8 +280,10 @@ def run(agents: dict, cid: str, seat_name: str = "") -> int:
                 # it must reach the human's next session, not scroll away with this one.
                 loopguard.make_record(f"card-{cid}", {}, sentinel.group(1), "human", text,
                                       need=sentinel.group(2), card=cid, who=name)
-        elif rc != 0 or (res or {}).get("is_error"):
-            status, reason = "failed", f"harness exit {rc}" + (f" ({res.get('subtype')})" if res else " (no result)")
+        elif usage["status"] == "blocked":
+            status, reason = "blocked", usage["reason"]
+        elif rc != 0:
+            status, reason = "failed", usage["reason"] or "Codex run failed"
         elif read_only:
             status, reason = ("done", "") if text.strip() else ("failed", "no report returned")
         else:
@@ -472,10 +317,6 @@ def run(agents: dict, cid: str, seat_name: str = "") -> int:
     elapsed = round(time.time() - t0, 1)
     if status != "blocked":
         loopguard.resolve_card(cid)        # a refused self-check that did not stop the run is not an open ask
-    cost = (res or {}).get("total_cost_usd")
-    # A run that ENDED normally is judged by its checks: the cap is tested between steps, so the
-    # last step can pass it. Said out loud, never a reason to throw away work that passed.
-    over_cap = status != "over_budget" and isinstance(cost, (int, float)) and cost > float(b["usd"])
     blocks, _, overrides, warns = seat.events_for(name, started)
 
     logs = _config.state_dir() / "seat_logs"
@@ -487,33 +328,28 @@ def run(agents: dict, cid: str, seat_name: str = "") -> int:
         rep.mkdir(exist_ok=True)
         (rep / f"{cid}_{started.replace(':', '-')}.md").write_text(scrub(text), encoding="utf-8")
 
-    row = {"ts": started, "agent": name, "seat": spec.get("seat"), "harness": "claude-code", "model": model,
+    row = {"ts": started, "agent": name, "seat": spec.get("seat"), "harness": "codex", "model": model,
            "task": card["goal"], "card": cid, "status": status, "reason": reason, "seconds": elapsed,
-           "exit": rc, "tool_calls": tools, "turns": (res or {}).get("num_turns"), "cost_usd": cost,
-           "cap_usd": float(b["usd"]), "over_cap": over_cap, "tokens": tokens(res),
+           "exit": rc, "tool_calls": tools, "effort": effort,
+           "cap_tokens": b["tokens"], "cap_minutes": b["minutes"], "tokens": usage.get("tokens", {"in": 0, "out": 0}),
            "branch": br, "head": head, "files": changed, "diffstat": stat,
            "accept": [{"run": a["run"], "rc": a["rc"]} for a in acc],
            "blocks": blocks, "overrides": overrides, "warns": warns, "denied": denied, "clean": status == "done"}
     with seat.RUNS.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
     # ...and on the card itself: what it cost is part of the ticket, not only of a log in the git dir.
-    cardmod.record_run(cid, {"ts": started, "seat": name, "model": model, "status": status,
-                             "seconds": elapsed, "tool_calls": tools, "cost_usd": cost,
-                             "cap_usd": float(b["usd"]), "tokens": row["tokens"]})
-
+    cardmod.record_run(cid, {**{k: row[k] for k in ("ts", "model", "effort", "status", "seconds", "tool_calls",
+                             "cap_tokens", "cap_minutes", "tokens")}, "seat": name})
     passed = sum(1 for a in acc if a["rc"] == 0)
-    money = f" · ${cost:.3f}" if isinstance(cost, (int, float)) else ""
+    total = sum(row["tokens"].values())
     line = (f"{status} · " + (f"{len(changed)} file(s) {stat} · " if changed else "")
-            + (f"acceptance {passed}/{len(acc)} · " if acc else "") + f"{elapsed:g}s · {tools} tool calls{money}"
+            + (f"acceptance {passed}/{len(acc)} · " if acc else "") + f"{elapsed:g}s · {tools} tool calls · {total} tokens"
             + (f" · {br} @ {head}" if head else ""))
     board.set_state(cid, {"done": "review"}.get(status, "blocked"), f"run {started[:16]}Z: {line}"
                     + (f" | {reason}" if reason else ""))
     print(f"\n  CARD {cid}: {line}")
     if reason:
         print(f"  reason: {reason}")
-    if over_cap:
-        print(f"  note: the run cost ${cost:.3f}, over its cap of ${float(b['usd']):g} on its last step. "
-              f"It ended normally and was judged by its checks.")
     if denied and status != "blocked":
         print(f"  note: the seat tried {len(denied)} command(s) it was not allowed to run, was refused, and carried on: "
               + "; ".join(d[:60] for d in denied[:3]))

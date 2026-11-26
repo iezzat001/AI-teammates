@@ -1,10 +1,9 @@
 ---
 name: backend
 seat: Backend
-harness: claude-code
-model: claude-sonnet-5-5
+harness: codex
+model: gpt-6.2-sol
 writes: true
-allow: Read,Glob,Grep,Edit,Write
 worktree: ../PROJECT-backend
 branch_prefix: feat/db-
 ---
@@ -36,13 +35,13 @@ facts, and the commands that prove you are done. Nothing else.
 
 Yours: the files on the card (backend code, schema, migrations, access
 policies, data-access modules). Not yours: anything else, UI components, deploy
-config, `.claude/`, `.ai-teammates/`.
+config, `.codex/`, `.ai-teammates/`.
 
 ## What actually binds you
 
-Claude Code with hooks live: edits outside the card's scope are denied, an
+Codex CLI with hooks live: edits outside the card's scope are denied, an
 approval or login you do not have ends your run with a BLOCKED report, you have a
-time and tool-call budget, and the runner executes the acceptance commands.
+time, token and tool-call budgets, and the runner executes the acceptance commands.
 
 - Never run destructive SQL without a verified backup, and say so first. If the
   card does not give you one, that is a BLOCKED, not a judgement call.

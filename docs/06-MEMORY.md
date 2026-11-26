@@ -10,7 +10,7 @@ This page says how memory works now. How it got here is in [History](#history) a
 
 ## Two systems, two halves
 
-- **claude-mem captures.** It records every Claude Code session through lifecycle hooks, so
+- **Historical Claude sessions.** Codex defaults to MemPalace. Existing claude-mem observations remain searchable. In a Claude installation, claude-mem captures sessions. It records every Claude Code session through lifecycle hooks, so
   capture is not a step anyone can forget.
 - **MemPalace finds.** It holds what is filed (facts, decision records, documents) and is what
   a search reads by default. On the pilot project it put the answer at rank 1 for 82% of

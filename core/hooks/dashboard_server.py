@@ -139,10 +139,9 @@ def _model(name: str, a: dict) -> str:
     """What runs the agent, in words. The CTO's model lives in config.json only (its spec names none),
     so the spec's `?` and a bare `default` both read as nothing to someone looking at the panel."""
     if name == "cto":
-        c = _config.load().get("cto") or {}
-        m = c.get("model") or "default"
-        m = "Claude Code's default model" if m == "default" else m
-        return m + (f", effort {c['effort']}" if c.get("effort") not in (None, "", "default") else "")
+        import codex_runtime
+        model, effort = codex_runtime.configured_cto()
+        return f"{model}, effort {effort}"
     return a.get("model") or "?"
 
 

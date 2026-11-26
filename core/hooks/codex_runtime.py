@@ -22,6 +22,29 @@ def route(tier):
     return ROUTES[tier]
 
 
+def configured_cto():
+    import _config
+    model, effort = route("cto")
+    cfg = _config.load().get("cto") or {}
+    return cfg.get("model") or model, cfg.get("effort") or effort
+
+
+def card_route(data):
+    import _config
+    tier = data.get("tier") or "standard"
+    if tier not in ("mechanical", "standard", "hard"):
+        raise ValueError(f"unknown card tier: {tier}")
+    default, effort = route(tier)
+    override = data.get("model")
+    if isinstance(override, str) and override.startswith("claude-"):
+        # Cards written before the provider change keep their tier and historical runs.
+        override = None
+    model = override or (_config.load().get("seat_models") or {}).get(tier, default)
+    if not isinstance(model, str) or not model.strip():
+        raise ValueError("the card model must be a nonempty model ID")
+    return model, effort
+
+
 def catalog():
     try:
         p = subprocess.run([executable(), "debug", "models"], capture_output=True,
@@ -52,20 +75,14 @@ def show_route(argv):
     parser.add_argument("--verify", action="store_true", help="check the selected CLI's model catalog")
     args = parser.parse_args(argv)
     if args.card is None:
-        model, effort = route(args.tier)
+        model, effort = configured_cto() if args.tier == "cto" else card_route({"tier": args.tier})
     else:
         if Path(args.card).name != args.card:
             parser.error("supply a card ID")
         data = card.load(args.card)
         if not isinstance(data, dict):
             raise ValueError("the card must be a JSON object")
-        tier = data.get("tier") or "standard"
-        if tier not in card.TIERS:
-            raise ValueError(f"unknown card tier: {tier}")
-        default_model, effort = route(tier)
-        model = data.get("model") or default_model
-        if not isinstance(model, str) or not model.strip():
-            raise ValueError("the card model must be a nonempty model ID")
+        model, effort = card_route(data)
     if args.verify:
         verify(model, effort, catalog())
     print(model, effort)

@@ -6,7 +6,7 @@
 #   KEEP=1 scripts/test.sh     # keep the temp project for debugging
 #
 # Nothing outside the temp folder is touched: HOME points into it (install.sh links `cto`
-# into $HOME/.local/bin), and git ignores your global config. `claude` is a stub that reports
+# into $HOME/.local/bin), and git ignores your global config. `codex` is a stub that reports
 # "signed in", so no account is needed; the suite's own sign-in check proves nothing here.
 set -euo pipefail
 
@@ -23,15 +23,15 @@ mkdir -p "$HOME" "$WORK/bin"
 if [ -d "$REAL_HOME/.cache/chroma" ]; then
   mkdir -p "$HOME/.cache" && ln -s "$REAL_HOME/.cache/chroma" "$HOME/.cache/chroma"
 fi
-cat > "$WORK/bin/claude" <<'SH'
+cat > "$WORK/bin/codex" <<'SH'
 #!/bin/sh
 case "$1" in
-  auth)      echo '{"loggedIn": true}' ;;
+  login)     echo "Logged in using ChatGPT" ;;
   --version) echo "0.0.0 (test stub)" ;;
-  *)         echo "claude test stub: no model in scripts/test.sh" >&2; exit 1 ;;
+  *)         echo "codex test stub: no model in scripts/test.sh" >&2; exit 1 ;;
 esac
 SH
-chmod +x "$WORK/bin/claude"
+chmod +x "$WORK/bin/codex"
 # $HOME/.local/bin first: install.sh links `cto` there, to THIS checkout. FOUND 2026-11-10: it was
 # not on PATH, so the suite's launcher checks ran whatever `cto` the machine already had (the
 # developer's installed copy, not the code under test) and were skipped in CI, which has none.
@@ -61,7 +61,7 @@ echo "── install ──"
 # Until 2026-11 it only worked from inside the project. No terminal and no setup options here,
 # so setup does not run yet (it does further down).
 (cd "$WORK" && "$SRC/install.sh" "$proj")
-# Claude Code is the only harness (docs/04-ROUTING.md). Until 2026-11 the installer also wrote an
+# Codex CLI is the only harness (docs/04-ROUTING.md). Until 2026-11 the installer also wrote an
 # OpenCode deny-list into every project and told the owner to commit it.
 if [ -e opencode.json ]; then echo "FAIL: install.sh wrote opencode.json, a file no supported harness reads"; exit 1; fi
 echo "  ok    install.sh writes nothing for a harness that is not supported"
@@ -72,9 +72,9 @@ fi
 echo "  ok    a fresh install's config blocks the CTO from writing product code itself"
 git add -A && git commit -qm "chore: install AI-teammates"
 # An upgrade of an installed project must change only what changed. FOUND 2026-10-28: every re-run
-# rewrote .claude/settings.json without its final newline - a diff on every upgrade of a project whose
+# rewrote .codex/hooks.json without its final newline - a diff on every upgrade of a project whose
 # file ends in one, as files saved by an editor or by Claude Code do. So: give it one, then re-install.
-tail -c1 .claude/settings.json | od -An -c | grep -q '\\n' || { echo >> .claude/settings.json; git commit -qam "editor: final newline"; }
+tail -c1 .codex/hooks.json | od -An -c | grep -q '\\n' || { echo >> .codex/hooks.json; git commit -qam "editor: final newline"; }
 "$SRC/install.sh" > /dev/null
 if [ -n "$(git status --porcelain)" ]; then
   echo "FAIL: re-running install.sh on an installed project changed:"; git status --porcelain; exit 1

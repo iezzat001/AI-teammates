@@ -3,6 +3,7 @@
 #
 #   cto                 interactive session — you talk, it works, you talk again
 #   cto "do the thing"  one task, headless, exits when done
+#   cto --card ID       run the named seat card and give its verified result to the CTO
 #   cto --doctor        check the environment and leave
 #   cto --selftest      run the whole guardrail suite now (about two minutes) and leave
 #   cto setup           the tool and plan, memory, team, scope and spend; then the workspace: it
@@ -18,7 +19,7 @@ REPO="$(git rev-parse --show-toplevel 2>/dev/null)" || {
 CFG="$REPO/.ai-teammates"
 [ -d "$CFG" ] || { echo "AI-teammates is not installed here. Run: ai-teammates install" >&2; exit 1; }
 HOOKS="$CFG/hooks"
-# Claude Code runs from REPO, whatever directory `cto` was started in: its
+# Codex CLI runs from REPO, whatever directory `cto` was started in: its
 # project settings and hook paths are resolved from the session's directory.
 cd "$REPO"
 
@@ -55,64 +56,7 @@ fi
 NEWPATH="$(python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import _config; print(_config.tool_path())' "$HOOKS" 2>/dev/null)"
 [ -n "$NEWPATH" ] && export PATH="$NEWPATH"
 
-# One python call, several values. The earlier form put `|| echo` between the
-# heredoc marker and its body, which silently made the heredoc part of the
-# fallback string — `cto --doctor` printed python source where the model name
-# should have been. Caught on the first run of a fresh install.
-# config.json is the one place the CTO's model lives (cto.md no longer repeats it).
-# cto.effort (low|medium|high|xhigh|max) is passed as `claude --effort`; "default" or unset = the CLI's own.
-# cto.mcp: "none" (default) = no MCP servers; "inherit" = every server in your user config and plugins;
-# or a path to an MCP config file = only those servers.
-# cto.max_usd: the most a HEADLESS run (`cto "task"`) may spend; Claude Code stops it there. Unset = no cap.
-read -r MODEL PROVIDER EFFORT CTO_MCP CTO_MAX_USD <<< "$(python3 -c '
-import json,sys
-try:
-    c = json.load(open(sys.argv[1])).get("cto", {})
-except Exception:
-    c = {}
-m = c.get("max_usd")
-print(c.get("model") or "default", c.get("provider") or "anthropic",
-      c.get("effort") or "default", c.get("mcp") or "none",
-      ("%g" % m) if isinstance(m, (int, float)) and not isinstance(m, bool) and m > 0 else "none")
-' "$CFG/config.json" 2>/dev/null || echo "default anthropic default none none")"
-CTO_MCP="${CTO_MCP:-none}"
-# cto.tools: the built-in tools the CTO is offered ("default" = all of them). MEASURED 2026-10-06:
-# the CTO used 7 tools in ~400 calls over six sessions (plus TaskStop once), and was offered 24,
-# with a list of 6 subagent types and ~40 skills it never invoked. Naming the working set cut a
-# one-word Opus 5.5 call from 26,601 to 9,942 tokens; removing the Skill and Task tools also
-# removes the skill and subagent listings. Typed /commands still work for the owner.
-CTO_TOOLS="$(python3 -c '
-import json,sys
-try:
-    c = json.load(open(sys.argv[1])).get("cto", {})
-except Exception:
-    c = {}
-t = c.get("tools") or "Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch,TaskStop"
-print(",".join(t) if isinstance(t, list) else t)
-' "$CFG/config.json" 2>/dev/null || echo "Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch,TaskStop")"
-# cto.claude_md_excludes: CLAUDE.md files the CTO does not load (e.g. a personal global one that
-# says nothing about this codebase): ~2.2k tokens per call for the owner's, measured 2026-10-06.
-CTO_SETTINGS="$(python3 -c '
-import json,os,sys
-try:
-    ex = json.load(open(sys.argv[1])).get("cto", {}).get("claude_md_excludes") or []
-except Exception:
-    ex = []
-print(json.dumps({"claudeMdExcludes": [os.path.expanduser(x) for x in ex]}) if ex else "")
-' "$CFG/config.json" 2>/dev/null)"
-MODEL="${MODEL:-default}"; PROVIDER="${PROVIDER:-anthropic}"; EFFORT="${EFFORT:-default}"
-case "$EFFORT" in low|medium|high|xhigh|max|default) ;; *) echo "  cto: config.json cto.effort '$EFFORT' is not low|medium|high|xhigh|max - using the default"; EFFORT=default ;; esac
-
-# The CTO runs on Claude Code, signed in to Anthropic: that is where the hooks fire. Until
-# 2026-11 a config with another provider was launched through `ollama launch`, a path that
-# stopped answering on 2026-09-24 (docs/04-ROUTING.md, History). Say so; launch nothing else.
-if [ "$PROVIDER" != "anthropic" ]; then
-  echo "  cto: config.json cto.provider is '$PROVIDER'. The CTO runs on Claude Code only." >&2
-  echo "       Remove \"provider\" from .ai-teammates/config.json and set cto.model to a Claude model" >&2
-  echo "       (or \"default\"), then run: cto setup" >&2
-  exit 1
-fi
-
+CODEX="${AI_TEAMMATES_CODEX_BIN:-codex}"
 # `cto` is a live link to the AI-teammates repo; the hooks are the copy the
 # project installed. When they drift, cto can call hooks that are not there
 # (it skips a missing one silently) - say so instead.
@@ -125,29 +69,25 @@ if [ -d "$SRC_HOOKS" ]; then
   [ "$stale" -eq 0 ] || STALE_NOTE="  NOTE: $stale hook(s) here differ from this cto's version — re-run: ai-teammates install"
 fi
 
-# Is memory CAPTURING? First this tested that ~/.claude-mem exists, then that the
-# worker answered - which it did for eight days while nothing was kept. Now it
-# asks whether anything is being KEPT: the last observation and the queue.
 mem_status() {
   python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import _config
-m = _config.mem_capture(); print(("capturing: " if m["ok"] else "NOT capturing: ") + m["why"])
-sys.exit(0 if m["ok"] else 1)' "$HOOKS" 2>/dev/null || return 1
+m = _config.load().get("memory") or {}
+print(m.get("default") or "no memory source configured")' "$HOOKS"
 }
 
 # --- doctor ----------------------------------------------------------------
 if [ "${1:-}" = "--doctor" ]; then
   echo "── environment ─────────────────────────────────────────"
-  for c in claude git python3 node bun uv; do
-    v="$(command -v "$c" >/dev/null 2>&1 && ($c --version 2>/dev/null | head -1) || echo '— missing')"
+  for c in "$CODEX" git python3 node bun uv; do
+    v="$(command -v "$c" >/dev/null 2>&1 && ("$c" --version 2>/dev/null | head -1) || echo '— missing')"
     printf "  %-9s %s\n" "$c" "$v"
   done
   echo
   echo "  git in use : $(command -v git) $(git --version | awk '{print $3}')"
-  echo "  cto model  : $MODEL, effort $EFFORT, mcp $CTO_MCP, headless cap ${CTO_MAX_USD:-none}"
-  echo "  cto tools  : $CTO_TOOLS${CTO_SETTINGS:+ (CLAUDE.md excluded: $CTO_SETTINGS)}"
-  echo "  claude     : $(claude auth status 2>/dev/null | grep -q '"loggedIn": true' && echo 'signed in' || echo 'NOT signed in — claude auth login')"
-  echo "  claude-mem : $(mem_status)"
-  exit 0
+  python3 "$HOOKS/cto_codex.py" doctor
+  rc=$?
+  echo "  memory     : $(mem_status)"
+  exit "$rc"
 fi
 
 # --- the whole suite, on demand ---------------------------------------------
@@ -223,10 +163,9 @@ print("\n".join(keep))
 print(f"({passed} checks passed and are not listed; the full output is in {sys.argv[1]})")' "$PF_LOG" 2>/dev/null)"
 [ -n "$PF_SUMMARY" ] || PF_SUMMARY="(pre-flight output could not be summarised; read $PF_LOG)"
 
-# Signed out, Claude Code cannot start this session at all - and claude-mem's
-# observer uses the same sign-in, so memory stops with it. Stop here.
-if ! claude auth status 2>/dev/null | grep -q '"loggedIn": true'; then
-  echo; echo "  STOP  Claude Code is not signed in. Run:  claude auth login"; exit 1
+# A team run needs an authenticated Codex CLI.
+if ! "$CODEX" login status >/dev/null 2>&1; then
+  echo "  STOP  Codex CLI is not signed in. Run: codex login"; exit 1
 fi
 
 if [ "$fail" -ne 0 ]; then
@@ -251,7 +190,7 @@ the whole session:
 Read these when the work calls for them, not before:
   $CFG/docs/07-FAILURE-CATALOGUE.md   the cases behind the nine failure shapes in cto.md
   $CFG/docs/02-GUARDRAILS.md  when a guard fires, or before you touch a rule
-  $CFG/docs/04-ROUTING.md     before you write a card (which tier, which model, what it costs)
+  $CFG/docs/04-ROUTING.md     before you write a card (which tier, model and budget)
   $CFG/docs/05-CTO.md         why a rule in cto.md is there, when one seems wrong
 
 THE BOARD, open cards only (one card in full: python3 $CFG/hooks/board.py show <ID>;
@@ -267,82 +206,23 @@ $PF_SUMMARY
 If anything failed, fix it before new work (and ask the owner where it is theirs to decide)."
 
 echo
-echo "── CTO · $MODEL · effort $EFFORT ────────────────"
-echo
-
-# --- launch ----------------------------------------------------------------
-# PROMPT FIRST, flags after: --allowedTools is variadic and will consume a
-# trailing prompt as tool patterns, then die with "Input must be provided".
-# Pre-approved without asking. Deliberately NOT here:
-#   python3:* / npx:*  arbitrary code - and wrapping git in python3 walked past
-#                      guard.py's command checks. Only our own hook scripts.
-#   ssh / scp          production deploys need the human's word: interactive
-#                      sessions ask you, headless (`cto "task"`) cannot deploy.
-# Added: the checks the review protocol prescribes (process table, checksums),
-# which were previously refused in headless mode.
-ALLOW="Bash(git:*),Bash(curl:*),Bash(npm:*),Bash(rg:*),Bash(ls:*),Bash(cat:*),\
-Bash(pgrep:*),Bash(ps:*),Bash(md5:*),Bash(shasum:*),\
-Read,Edit,Write,Glob,Grep"
-for h in seat seat_status board review flow facts guardrail_test prepush check_build_env session_end loopguard card memslice memlife; do
-  ALLOW="$ALLOW,Bash(python3 .ai-teammates/hooks/$h.py:*)"
-done
-# Project-specific exact commands, e.g. the NON-production deploy:
-#   "cto": {"allow": ["npx wrangler deploy --name myapp-development"]}
-# Exact prefixes, never a whole tool: removing npx:* made the development
-# deploy impossible headless, and the answer is not to give npx back.
-EXTRA="$(python3 -c 'import json,sys; print(",".join("Bash(%s:*)" % a for a in json.load(open(sys.argv[1])).get("cto", {}).get("allow", [])))' "$CFG/config.json" 2>/dev/null)"
-[ -n "$EXTRA" ] && ALLOW="$ALLOW,$EXTRA"
-
-launch() {
-  # Appended LAST: --tools takes a list, and a prompt after it would be read as a tool name
-  # (the --allowedTools trap in 04-ROUTING). The callers pass the brief first.
-  [ "$CTO_TOOLS" != "default" ] && set -- "$@" --tools "$CTO_TOOLS"
-  [ -n "$CTO_SETTINGS" ] && set -- --settings "$CTO_SETTINGS" "$@"
-  # config.json cto.model was ignored once: every session ran on whatever Claude Code defaulted to.
-  [ "$EFFORT" != "default" ] && set -- --effort "$EFFORT" "$@"
-  # MEASURED 2026-10-05: the CTO inherited every MCP server in the owner's setup (claude.ai
-  # connectors, five Cloudflare plugin servers, claude-mem search). They connect after the first
-  # call and their tool definitions then ride in EVERY call: ~100k tokens of a ~200k baseline on
-  # Opus, re-read from cache 100+ times a session. The CTO used two of those tools in three days.
-  # It works through the shell and the hooks; plugins (claude-mem capture) still load.
-  case "$CTO_MCP" in
-    inherit) ;;
-    none)    set -- --strict-mcp-config "$@" ;;
-    *)       set -- --strict-mcp-config --mcp-config "$CTO_MCP" "$@" ;;
-  esac
-  if [ -n "$MODEL" ] && [ "$MODEL" != "default" ]; then
-    claude --model "$MODEL" "$@"
-  else
-    claude "$@"
-  fi
-}
-
-export CTO_PROJECT="$REPO"
-export CLAUDE_AGENT_NAME=cto
-
+echo "── CTO · Codex CLI ────────────────"
+export CTO_PROJECT="$REPO" CLAUDE_AGENT_NAME=cto AI_TEAMMATES_RUNTIME=codex
 if [ $# -gt 0 ]; then
-  # Headless: nobody is there to answer a permission prompt. On the pilot project this
-  # mode produced 101 of 230 tool errors - approval denials the model answered by
-  # rephrasing, up to nine in a row. loopguard turns the first denial into a
-  # BLOCKED ask and ends the run on the next, and the report below says what the
-  # owner has to do. --permission-prompts none: anything that would prompt is
-  # denied up front, which is what the hook then answers.
   export AI_TEAMMATES_HEADLESS=1
   START="$(date -u +%Y-%m-%dT%H:%M:%S)"
-  # Nobody is watching a headless run spend: config.json cto.max_usd caps it (Claude Code stops
-  # the run itself). Before --allowedTools, which is variadic and would swallow it.
-  CAP=(); [ "${CTO_MAX_USD:-none}" != "none" ] && CAP=(--max-budget-usd "$CTO_MAX_USD")
-  launch -p "$BRIEF
+  if [ "$1" = "--card" ]; then
+    [ "$#" -eq 2 ] || { echo "usage: cto --card ID" >&2; exit 2; }
+    python3 "$HOOKS/cto_codex.py" card "$BRIEF" "$2"
+  else
+    python3 "$HOOKS/cto_codex.py" exec "$BRIEF
 
-TASK: $*" --permission-mode acceptEdits --permission-prompts none ${CAP[@]+"${CAP[@]}"} --allowedTools "$ALLOW" < /dev/null
+TASK: $*"
+  fi
   rc=$?
   python3 "$HOOKS/loopguard.py" report --since "$START"
   exit $rc
-else
-  # Interactive. The session stays open: give it a task, read the report, give
-  # it the next one, without re-running pre-flight or re-reading the docs.
-  launch "$BRIEF
-
-Greet the user in one line with the current branch and anything pre-flight
-flagged, then wait for the first task." --permission-mode acceptEdits --allowedTools "$ALLOW"
 fi
+exec python3 "$HOOKS/cto_codex.py" interactive "$BRIEF
+
+Greet the user with the current branch and pre-flight findings, then wait for a task."

@@ -1,9 +1,8 @@
 ---
 name: cto
 seat: CTO
-harness: claude-code
+harness: codex
 orchestrator: true
-permission_mode: acceptEdits
 worktree: .
 ---
 
@@ -46,7 +45,7 @@ Only the human can fix these. Stop at the first sign; never work around them:
 - auth, login, token or billing errors (401/402/403, "not signed in", "usage credits")
 - `sudo`, a password, a passphrase, a y/n prompt
 - a missing tool or credential
-- a guardrail block you think is wrong. Say so. Never edit the hooks, `.claude/settings.json`
+- a guardrail block you think is wrong. Say so. Never edit the hooks, `.codex/hooks.json`
   or `.ai-teammates/config.json` (its limits and budgets included) to get past it.
 
 Two attempts at most; the same command spelled differently is the same attempt. Then one
@@ -90,7 +89,7 @@ Every command is `python3 .ai-teammates/hooks/<script> ...`. Read `04-ROUTING.md
    `.ai-teammates/cards/<ID>.json`:
    - `goal`: what is TRUE afterwards, one line. `steps`: file:line and the new text.
      `acceptance`: commands that exit 0, never "looks right". `out_of_scope`: the helpful
-     extra a seat would add. `budget.usd`: what this run may cost.
+     extra a seat would add. `budget.tokens`: input and output tokens allowed.
    - Tiers: `mechanical` = renames, a known pattern; `standard` = a component or endpoint
      with a clear spec; `hard` = correctness is the deliverable.
    - More than one card: a parent card, children with `card.py new <ID>-1 --parent <ID>`,
@@ -100,8 +99,9 @@ Every command is `python3 .ai-teammates/hooks/<script> ...`. Read `04-ROUTING.md
 2. **`card.py check <ID>`.** If it says *split*, check the grouping and run the `card.py split`
    command it prints. Never raise a limit to get past it.
 3. **`seat.py run --card <ID>`** blocks until the seat is done, blocked, or stopped at a
-   budget: time, tool calls, or money (`over_budget`: split, or a cheaper tier). A card that
-   would take the day over the owner's daily budget is not launched; relay that ask.
+   budget: time, tool calls, or tokens (`over_budget`: split, or a cheaper tier). A card that
+   would exceed today's budget is refused. Request runner approval interactively. For an unattended
+   handoff, give the owner `cto --card <ID>`.
 4. **The status line is facts, not the seat's word** (diff, scope, acceptance, all executed).
    `done` does not mean right: re-derive **one** load-bearing claim yourself, then
    `seat.py land <ID>`. It re-runs the checks on the merged result; a conflict goes to the
@@ -127,7 +127,7 @@ When a hook lists commits no fact review covers: `fact set`, or `memlife.py fact
 - **Announce spend** before an operation that bills per call.
 - **Production deploys need the human's word.** Seats are denied `ssh`; you deploy, after
   reviewing their diff.
-- **Verify a model exists before configuring it**: `claude --model <id> -p hi`.
+- **Verify a model exists before configuring it**: `seat.py route <tier> --verify`.
 - **Ask rather than guess.**
 - **AI-teammates itself is not your project.** Never change it or open pull requests on it
   (`guard.py` blocks that). A framework bug, a wrong pre-flight check included, goes to the
