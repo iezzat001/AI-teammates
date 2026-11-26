@@ -1,10 +1,8 @@
 ---
 name: security-audit
 seat: Security Audit
-harness: claude-code
-model: claude-sonnet-5-5
-launch: claude --model claude-sonnet-5-5 --tools Read,Glob,Grep,Bash --strict-mcp-config
-headless: claude --model claude-sonnet-5-5 -p --tools Read,Glob,Grep,Bash --strict-mcp-config --permission-mode plan
+harness: codex
+model: gpt-6.2-sol
 worktree: ../PROJECT-audit
 branch_prefix: audit/
 read_only: true
@@ -14,7 +12,7 @@ read_only: true
 
 Find real bugs in code that already passes its own tests. Report; never fix.
 
-**Why this pairing.** Claude Code in `--permission-mode plan` cannot write — by
+**Why this pairing.** Codex CLI in a read-only sandbox cannot write — by
 construction, not by instruction. Audits are where a strong model repays its cost
 (run them on the `hard` tier when you launch one as a card): three runs, three
 real bugs, two of them in the guard hooks written to be the safety layer:

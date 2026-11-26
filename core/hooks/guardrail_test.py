@@ -4,7 +4,7 @@
     python3 .ai-teammates/hooks/guardrail_test.py              # everything: about two minutes (CI, `cto --selftest`)
     python3 .ai-teammates/hooks/guardrail_test.py --project    # only the checks about THIS project: under a second
     python3 .ai-teammates/hooks/guardrail_test.py --preflight  # --project, plus the self-test when it is due (`cto`)
-    python3 .ai-teammates/hooks/guardrail_test.py --live       # also try a denied command on each seat
+    python3 .ai-teammates/hooks/guardrail_test.py --live       # also verify effective CLI hook trust
 
 Two kinds of check live here. The PROJECT checks ask whether this project is guarded right now
 (hooks registered, committed, the same in every worktree, signed in). The SELF-TEST executes the
@@ -23,10 +23,7 @@ Four guardrails have silently stopped applying after being verified once:
 Every one was confirmed working at the time. Each stopped when something moved.
 So the question is never "did I set this up" but "is it true today".
 
-STATIC checks the config. --LIVE launches each seat and asks it to run a denied
-command, which is the only proof that the runtime honours the file. Static
-passing while live fails is precisely bug #4, so treat static as necessary and
-never sufficient.
+The project checks inspect registrations. --live asks the selected Codex process which hooks are trusted.
 
 Exit 1 on any failure.
 """
@@ -76,7 +73,7 @@ SELFTEST_MAX_AGE = 7 * 86400    # the machine around the code changes too (a too
 
 def tool_versions() -> str:
     out = [sys.version.split()[0]]
-    for cmd in ([GIT, "--version"], ["claude", "--version"]):
+    for cmd in ([GIT, "--version"], [__import__("codex_runtime").executable(), "--version"]):
         try:
             out.append(subprocess.run(cmd, capture_output=True, text=True, timeout=20).stdout.strip() or "?")
         except Exception:
@@ -87,12 +84,12 @@ def tool_versions() -> str:
 def fingerprint(repo: Path, versions: str = None) -> str:
     """One hash over everything the self-test's answer depends on: the installed hooks (this file
     among them), the launcher that started us, config.json, the seat specs, the hook registration,
-    and the versions of python, git and claude. Product code is not in it: no check here reads it."""
+    and the versions of Python, Git and Codex. Product code is not in it: no check here reads it."""
     import hashlib
     import os
     ai = repo / ".ai-teammates"
     files = sorted((ai / "hooks").glob("*.py")) + sorted((ai / "agents").glob("*.md")) \
-        + [ai / "config.json", repo / ".claude" / "settings.json"]
+        + [ai / "config.json", repo / ".codex" / "hooks.json"]
     launcher = os.environ.get("AI_TEAMMATES_CTO_BIN")
     if launcher:
         files.append(Path(launcher))
@@ -142,112 +139,21 @@ def seats():
     return seat.load_agents()
 
 
-# A Claude Code seat is governed by --permission-mode and its command line, not by a
-# deny-list file. Checking a file the harness never reads passes while proving nothing,
-# which is how security-audit once looked guarded and was not.
-SAFE_CLAUDE_MODES = ("plan", "manual")
-UNSAFE_CLAUDE_MODES = ("bypassPermissions", "auto", "dontAsk", "acceptEdits")
-
-
-def check_claude_seat(name, a):
-    head = a.get("headless", "") + " " + a.get("launch", "")
-
-    # The CTO is an orchestrator, not a seat. It must write - that is the job.
-    # Its guardrails are guard.py (PreToolUse, and hooks DO fire in Claude Code)
-    # plus prepush.py, not a read-only permission mode. Exempting it here is
-    # narrow and deliberate; assert the guardrails that DO bind it instead of
-    # silently skipping, or this exemption becomes the hole.
-    if a.get("harness") == "claude-code" and name == "cto":
-        # Claude Code reads .claude/settings.json and nowhere else. That path is
-        # ITS contract, not ours - our scripts live in .ai-teammates/hooks but
-        # the registration has to be where the harness looks. A blanket path
-        # rewrite once pointed this check at .ai-teammates/settings.json, a file
-        # that cannot contain the answer, so it reported the orchestrator
-        # unguarded while the hooks were correctly registered.
-        settings = REPO / ".claude" / "settings.json"
-        try:
-            hooks = json.loads(settings.read_text()).get("hooks", {})
-        except Exception:
-            hooks = {}
-        # PostToolUseFailure and PermissionRequest are where failures and approval
-        # denials surface; PostToolUse only fires on success (loopguard.py).
-        missing = [h for h in ("PreToolUse", "PostToolUse", "UserPromptSubmit",
-                               "SessionEnd", "PostToolUseFailure", "PermissionRequest")
-                   if h not in hooks]
-        if missing:
-            bad(f"{name}: orchestrator with hooks missing: {', '.join(missing)}"
-                " — re-run: ai-teammates install")
-        elif not (REPO / ".ai-teammates" / "hooks" / "prepush.py").exists():
-            bad(f"{name}: orchestrator without prepush.py")
-        elif not (REPO / ".ai-teammates" / "hooks" / "loopguard.py").exists():
-            bad(f"{name}: orchestrator without loopguard.py")
-        else:
-            ok(f"{name}: orchestrator — writes by design, bound by "
-               f"{len(hooks)} live hooks + prepush")
-        return
-
-    # A card seat's command line is built by cardrun.card_command, not templated in
-    # its spec, so assert on the argv that would actually launch. acceptEdits is only
-    # safe HERE because three things travel with it: prompts denied outright (nothing
-    # can wait on a human), an explicit allowlist, and isolation from the user's own
-    # plugins/MCP. The edit-scope guard is exercised in check_cards.
-    if a.get("writes") == "true":
-        import cardrun
-        argv = cardrun.card_command(a, {"id": "X", "goal": "g", "scope": {"edit": ["a"]},
-                                        "acceptance": [{"run": "true"}]}, "p", "m")
-        flags = " ".join(argv)
-        needs = ["--permission-prompts none", "--permission-mode acceptEdits", "--allowedTools",
-                 "--strict-mcp-config", "--setting-sources project,local"]
-        gone = [n for n in needs if n not in flags]
-        # offered = allowed (2026-10-06): the default set is 24 tools plus skill and subagent listings
-        offered = set(argv[argv.index("--tools") + 1].split(",")) if "--tools" in argv[:-1] else None
-        allowed = {t.split("(", 1)[0] for t in argv[argv.index("--allowedTools") + 1].split(",")} \
-            if "--allowedTools" in argv[:-1] else set()
-        if "bypassPermissions" in flags or "dontAsk" in flags or "auto" in argv:
-            bad(f"{name}: card launch bypasses approval")
-        elif gone:
-            bad(f"{name}: card launch is missing: {', '.join(gone)}")
-        elif offered is None or offered - allowed or offered & {"Task", "Agent", "Skill"}:
-            bad(f"{name}: card launch offers tools beyond what it may use: --tools {sorted(offered or [])}")
-        else:
-            ok(f"{name}: card seat — acceptEdits + prompts denied + allowlist + isolated + "
-               f"offered only {','.join(sorted(offered))} (executed argv)")
-        return
-
-    m = re.search(r"--permission-mode\s+(\w+)", head)
-    if not m:
-        bad(f"{name}: claude-code seat with NO --permission-mode — defaults to asking, "
-            f"which hangs headless")
-        return
-    mode = m.group(1)
-    hl = a.get("headless", "")
-    tm = re.search(r"--tools\s+(\S+)", hl)
-    offered = set(tm.group(1).strip("'\"").split(",")) if tm else set()
-    if mode in UNSAFE_CLAUDE_MODES:
-        bad(f"{name}: --permission-mode {mode} bypasses approval")
-    elif mode not in SAFE_CLAUDE_MODES:
-        bad(f"{name}: unrecognised --permission-mode {mode}")
-    # FOUND 2026-10-06: the read-only audit seat inherited every MCP server of the owner's setup,
-    # write-capable ones included (Drive, a UI builder, Canva), and all 24 tools: cost on every audit,
-    # and a "read-only" seat offered tools that write.
-    elif "--strict-mcp-config" not in hl or not tm or offered & {"Edit", "Write", "NotebookEdit", "Task", "Skill"}:
-        bad(f"{name}: read-only seat not isolated: its headless command needs --strict-mcp-config and "
-            f"--tools with read tools only (has: {sorted(offered) or 'no --tools'})")
-    else:
-        ok(f"{name}: claude-code, --permission-mode {mode} (read-only), no MCP, offered {','.join(sorted(offered))}")
-
-
 def check_static(all_seats):
-    print("\n  STATIC — is each seat bound by the thing its harness actually reads?")
-    for name, a in all_seats.items():
-        # Claude Code is the only harness: its hooks are what stop a seat DURING a run (docs/04-ROUTING.md).
-        # Until 2026-11 any other harness was checked against an opencode.json deny-list instead, which
-        # passed for as long as that file lay in the project, whether or not anything read it.
-        if a.get("harness") != "claude-code":
-            bad(f"{name}: harness '{a.get('harness', '?')}' is not supported — seats run on claude-code, "
-                f"where the hooks fire. Set `harness: claude-code` in {a.get('_path', 'its spec')}")
-            continue
-        check_claude_seat(name, a)
+    print("\n  STATIC — Codex seats and hook registration")
+    from codex_hooks import REGISTRATION
+    for name, spec in all_seats.items():
+        if spec.get("harness") != "codex":
+            bad(f"{name}: harness is not supported; use codex")
+        elif name != "cto" and spec.get("read_only") != "true" and spec.get("writes") != "true":
+            bad(f"{name}: no read-only or writer role")
+        else:
+            ok(f"{name}: Codex role")
+    path = REPO / ".codex/hooks.json"
+    hooks = json.loads(path.read_text()).get("hooks", {}) if path.exists() else {}
+    for event, cmd in REGISTRATION.items():
+        active = any(h.get("command") == cmd for g in hooks.get(event, []) if not g.get("matcher") for h in g["hooks"])
+        (ok if active else bad)(f"Codex hook registered for {event}; trust is checked at launch")
 
 
 def inherited_problems(repo: Path, prod: str) -> list:
@@ -257,7 +163,7 @@ def inherited_problems(repo: Path, prod: str) -> list:
     .ai-teammates/hooks. Either one missing from the production branch means a worktree cut from it
     runs with no guard at all, and nothing in that worktree says so."""
     out = []
-    for path, what in ((".claude/settings.json", "the hook registration"),
+    for path, what in ((".codex/hooks.json", "the hook registration"),
                        (".ai-teammates/hooks/guard.py", "the hooks (.ai-teammates/hooks)")):
         r = subprocess.run([GIT, "cat-file", "-e", f"{prod}:{path}"], cwd=repo, capture_output=True)
         if r.returncode != 0:
@@ -477,8 +383,66 @@ def check_codex_routes():
         (ok if r.returncode != 0 and "model" in r.stderr else bad)("malformed explicit model refuses")
         path.write_text(json.dumps({"id": "DOC-1", "model": "claude-sonnet-5-5"}))
         r = route("--card", "DOC-1", "--verify")
-        (ok if r.returncode != 0 and "claude-sonnet-5-5" in r.stderr else bad)(
-            "verification explains an existing card's incompatible explicit model")
+        (ok if r.returncode == 0 and r.stdout.strip() == "gpt-6.2-sol medium" else bad)(
+            "a legacy card uses the verified Codex route for its tier")
+
+
+def check_codex_budgets():
+    """Exercise reservations, migration and hook responses in an isolated Git project."""
+    import os
+    import tempfile
+    import codex_hooks
+    import run_budget
+
+    previous = Path.cwd()
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        subprocess.run([GIT, "init", "-q", td], check=True)
+        ai = root / ".ai-teammates"
+        ai.mkdir()
+        config = ai / "config.json"
+        config.write_text(json.dumps({"budget": {"daily_tokens": 100, "daily_minutes": 2}}))
+        os.chdir(root)
+        try:
+            reservation = {"minutes": 1, "tokens": 60}
+            with run_budget.reserve("first", "fixture", reservation) as first:
+                try:
+                    with run_budget.reserve("second", "fixture", reservation):
+                        pass
+                except run_budget.DailyLimit:
+                    ok("concurrent admissions cannot reserve the same daily tokens")
+                else:
+                    bad("two seats borrowed the same daily allowance")
+                first.update(started_turn=True, complete_usage=True, tokens={"in": 15, "out": 5}, seconds=10)
+            with run_budget.reserve("second", "fixture", reservation) as second:
+                second.update(started_turn=True, tokens={"in": 10, "out": 2}, seconds=5)
+            (ok if run_budget.totals() == (80, 15) else bad)("unfinished usage retains its token reservation")
+            # A preflight failure can unwind before the model session begins.
+            try:
+                with run_budget.reserve("bad card", "fixture", {"minutes": 1, "tokens": 10}):
+                    raise ValueError("invalid checkout")
+            except ValueError:
+                pass
+            (ok if run_budget.totals() == (80, 15) else bad)("failed preflight releases the unused reservation")
+        finally:
+            os.chdir(previous)
+
+        config.write_text(json.dumps({"cto": {"provider": "anthropic", "model": "claude-opus-5-5", "max_usd": 2},
+                                     "cards": {"default_usd": 1, "default_minutes": 9},
+                                     "budget": {"daily_usd": 20, "daily_tokens": 50}}))
+        legacy = root / ".claude/settings.json"
+        legacy.parent.mkdir()
+        legacy.write_text(json.dumps({"hooks": {"PreToolUse": [{"hooks": [
+            {"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.ai-teammates/hooks/guard.py"},
+            {"type": "command", "command": "project-owned"}]}]}}))
+        codex_hooks.registration(root, True)
+        codex_hooks.migrate(root)
+        cfg = json.loads(config.read_text())
+        (ok if cfg["cto"] == {"model": "gpt-6.2-astra", "effort": "xhigh"} and
+         cfg["cards"] == {"default_minutes": 9} and cfg["budget"] == {"daily_tokens": 50} and
+         "project-owned" in legacy.read_text() and "guard.py" not in legacy.read_text() else bad)(
+             "upgrades migrate the old caps and retain project hooks and explicit time/token settings")
+
 
 
 def check_codex_patches():
@@ -517,6 +481,17 @@ def check_codex_patches():
             result = run("*** Begin Patch\n" + patch + "\n*** End Patch", seat)
             (ok if result.returncode == expected else bad)(f"Codex patch: {title}")
 
+        cfg = root / ".ai-teammates/config.json"
+        cfg.write_text(json.dumps({"cto": {"allow": ["wc -l"]}}))
+        for command, expected in (("git status", 0), ("wc -l README.md", 0), ("python3 --version", 2),
+                                  ("wc -c README.md", 2), ("git status && python3 --version", 2)):
+            env = {**os.environ, "AI_TEAMMATES_RUNTIME": "codex", "AI_TEAMMATES_HEADLESS": "1",
+                   "CLAUDE_AGENT_NAME": "cto"}
+            payload = {"tool_name": "Bash", "cwd": str(root), "tool_input": {"command": command}}
+            q = subprocess.run([sys.executable, str(guard)], cwd=root, env=env, input=json.dumps(payload),
+                               capture_output=True, text=True)
+            (ok if q.returncode == expected else bad)(f"headless CTO checks the approved command prefix for {command}")
+
 
 def check_harness():
     """Claude Code is the only harness: its hooks are what stop a seat during a run.
@@ -526,7 +501,7 @@ def check_harness():
     still wrote an opencode.json deny-list into every project, `cto setup` offered opencode and codex
     as a seat's harness, and bin/cto kept an Ollama launch path. A path the docs call dead and the
     code still takes is a path nothing guards."""
-    print("\n  HARNESS — is Claude Code the only way a seat or the CTO is launched?")
+    print("\n  HARNESS — is Codex CLI the only way a seat or the CTO is launched?")
     import contextlib
     import io
     import os
@@ -562,14 +537,14 @@ def check_harness():
         r = subprocess.run([sys.executable, str(ai / "hooks" / "seat.py"), "run", "old", "do it"], cwd=proj,
                            env=env, capture_output=True, text=True, timeout=60)
         expect("`seat.py run` refuses a seat on another harness, and launches nothing",
-               r.returncode != 0 and "claude-code" in (r.stdout + r.stderr) and not (proj / "RAN").exists())
+               r.returncode != 0 and "codex" in (r.stdout + r.stderr) and not (proj / "RAN").exists())
 
         # INHERITANCE: what a new worktree gets is what is committed on the production branch.
         probs = inherited_problems(proj, "main")
         expect("INHERITANCE: an install that was never committed is reported (a new worktree would have no hooks)",
-               any(".claude/settings.json" in x for x in probs) and any(".ai-teammates/hooks" in x for x in probs))
-        (proj / ".claude").mkdir()
-        (proj / ".claude" / "settings.json").write_text("{}\n")
+               any(".codex/hooks.json" in x for x in probs) and any(".ai-teammates/hooks" in x for x in probs))
+        (proj / ".codex").mkdir()
+        (proj / ".codex" / "hooks.json").write_text("{}\n")
         sh("add", "-A"); sh("commit", "-q", "-m", "install")
         expect("...and a committed one is not", inherited_problems(proj, "main") == [])
 
@@ -579,16 +554,9 @@ def check_models(all_seats):
     is its sign-in. Whether one model id resolves is `cto setup --verify-models`: one short call
     per model, which a pre-flight should not spend at every start."""
     print("\n  MODELS — can every seat reach its model right now?")
-    who = ", ".join(sorted(n for n, a in all_seats.items() if a.get("harness") == "claude-code")) or "cto"
-    try:        # the exit code is not the answer; the JSON it prints is
-        out = subprocess.run(["claude", "auth", "status"], capture_output=True,
-                             text=True, timeout=30).stdout
-        signed_in = bool(json.loads(out).get("loggedIn"))
-    except Exception as e:
-        bad(f"{who}: cannot read `claude auth status` ({type(e).__name__})")
-    else:
-        (ok if signed_in else bad)(f"{who}: Claude Code " + (
-            "signed in" if signed_in else "NOT signed in — run: claude auth login"))
+    import codex_runtime
+    r = subprocess.run([codex_runtime.executable(), "login", "status"], capture_output=True, timeout=30)
+    (ok if r.returncode == 0 else bad)("Codex login status: " + ("signed in" if r.returncode == 0 else "run codex login"))
 
 
 def parity(repo: Path, prod: str, integ: str) -> list:
@@ -1122,17 +1090,47 @@ def check_loopguard():
                asks(pre("h", "Write", {"file_path": f"{td}/.claude/settings.json"})[1]))
 
 
-STUB_CLAUDE = r'''#!/usr/bin/env python3
-# Stands in for `claude` so the card pipeline can be tested without a model.
+STUB_CODEX = r'''#!/usr/bin/env python3
 import json, os, sys, time
+from pathlib import Path
 mode = os.environ.get("STUB_MODE", "edit_ok")
-if os.environ.get("STUB_ARGV_OUT"):
-    open(os.environ["STUB_ARGV_OUT"], "w").write(json.dumps(sys.argv))
-if os.environ.get("STUB_PID_OUT"):
-    open(os.environ["STUB_PID_OUT"], "w").write(str(os.getpid()))
 emit = lambda o: print(json.dumps(o), flush=True)
-tool = lambda p: emit({"type": "assistant", "message": {"content": [
-    {"type": "tool_use", "name": "Edit", "input": {"file_path": p}}]}})
+if sys.argv[1:3] == ["login", "status"]:
+    sys.exit(0)
+if sys.argv[1:3] == ["debug", "models"]:
+    emit({"models": [{"slug": m, "supported_reasoning_levels": [{"effort": e} for e in ("low","medium","high","xhigh","max")]}
+                     for m in ("gpt-6.2-astra","gpt-6.2-sol","gpt-6-luna","m","stubmodel","good-model","m-ui","m-audit","m-cto","m-hard")]})
+    sys.exit(0)
+if os.environ.get("STUB_PID_OUT"):
+    Path(os.environ["STUB_PID_OUT"]).write_text(str(os.getpid()))
+notify = lambda method, **data: emit({"method": method, "params": {"threadId": "test", **data}})
+tool = lambda p: notify("item/started", item={"type":"fileChange", "id":"item", "path":p})
+for line in sys.stdin:
+    req = json.loads(line)
+    params = req.get("params", {})
+    method = req["method"]
+    if method == "initialized":
+        continue
+    if method == "initialize":
+        result = {}
+    elif method == "hooks/list":
+        sys.path.insert(0, str(Path.cwd() / ".ai-teammates/hooks"))
+        from codex_hooks import REGISTRATION
+        result = {"data": [{"cwd": str(Path.cwd()), "hooks": [
+                  {"eventName": k[:1].lower()+k[1:], "handlerType":"command", "command":cmd, "enabled":True,
+                   "trustStatus":"untrusted" if mode == "untrusted" else "trusted"} for k,cmd in REGISTRATION.items()]}]}
+    elif method == "thread/start":
+        sandbox, model = params["sandbox"], params["model"]
+        result = {"thread":{"id":"test"},"model":model}
+    elif method == "turn/start":
+        prompt = params["input"][0]["text"]
+        if os.environ.get("STUB_ARGV_OUT"):
+            Path(os.environ["STUB_ARGV_OUT"]).write_text(json.dumps([model, sandbox, prompt, params["effort"], *sys.argv[1:]]))
+        if os.environ.get("STUB_OUT"):
+            Path(os.environ["STUB_OUT"]).write_text(prompt)
+        emit({"id":req["id"], "result":{}})
+        break
+    emit({"id":req["id"], "result":result})
 def hook(cmd):
     # the REAL loopguard hook, called the way the harness calls it on a refused command
     import subprocess
@@ -1151,7 +1149,7 @@ if mode == "denied_twice":
     if hook("git diff | awk x").get("interrupt"):
         emit({"type": "result", "subtype": "error_during_execution", "is_error": True, "num_turns": 1})
         sys.exit(1)
-if mode in ("edit_ok", "acc_fail", "denied_then_ok"):
+if mode in ("edit_ok", "acc_fail", "denied_then_ok") and model != "gpt-6.2-astra":
     if mode == "denied_then_ok":
         hook("git diff --numstat | awk x")           # a refused optional self-check
     open("src/a.txt", "a").write("fixed\n"); tool("src/a.txt")
@@ -1178,17 +1176,19 @@ elif mode == "loop":
 elif mode == "fail_rc":
     emit({"type": "result", "subtype": "error_during_execution", "is_error": True, "num_turns": 1})
     sys.exit(1)
+elif mode == "failed_commands":
+    for index in range(2):
+        notify("item/completed", item={"type": "commandExecution", "command": "cat protected.txt",
+                                      "exitCode": 1, "aggregatedOutput": "Permission denied"})
 elif mode == "over_budget":
-    # what Claude Code 2.1.285 really returns when --max-budget-usd is hit (read from one real call,
-    # 2026-11-10): subtype error_max_budget_usd, is_error, exit 1, and the cost so far
-    open("src/a.txt", "a").write("fixed\n"); tool("src/a.txt")
-    emit({"type": "result", "subtype": "error_max_budget_usd", "is_error": True, "num_turns": 3,
-          "total_cost_usd": 0.61, "terminal_reason": "budget_exhausted", "errors": ["Reached maximum budget ($0.5)"]})
-    sys.exit(1)
-emit({"type": "result", "subtype": "success", "is_error": False, "num_turns": 2,
-      "total_cost_usd": float(os.environ.get("STUB_COST", "0.0123")), "result": text,
-      "modelUsage": {"m": {"inputTokens": 10, "outputTokens": 500, "cacheReadInputTokens": 2000,
-                           "cacheCreationInputTokens": 1000, "costUSD": 0.0123}}})
+    open("src/a.txt", "a").write("fixed\\n"); tool("src/a.txt")
+if mode != "no_usage":
+    for i, o in ((2500, 250), (3010, 500)):
+        notify("thread/tokenUsage/updated", tokenUsage={"total":{"inputTokens":i,"outputTokens":o,"totalTokens":i+o}})
+if mode == "over_budget":
+    time.sleep(60)
+notify("item/completed", item={"type":"agentMessage","text":text})
+notify("turn/completed", turn={"status":"completed"})
 '''
 
 
@@ -1222,7 +1222,7 @@ def check_cards():
         shutil.copytree(here, hooks, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         (proj / ".ai-teammates" / "agents").mkdir()
         (proj / ".ai-teammates" / "agents" / "tester.md").write_text(
-            "---\nname: tester\nseat: Tester\nharness: claude-code\nmodel: m\n"
+            "---\nname: tester\nseat: Tester\nharness: codex\nmodel: m\n"
             "branch_prefix: feat/t-\nwrites: true\n---\n# t\n")
         (proj / ".ai-teammates" / "config.json").write_text(
             json.dumps({"protected_branches": ["main", "development"]}))
@@ -1234,8 +1234,8 @@ def check_cards():
         (proj / "src" / "a.txt").write_text("a\n")
         (proj / "src" / "b.txt").write_text("b\n")
         g("add", "-A"); g("commit", "-qm", "i"); g("branch", "development")
-        stub = Path(td) / "stub_claude.py"
-        stub.write_text(STUB_CLAUDE)
+        stub = Path(td) / "stub_codex.py"
+        stub.write_text(STUB_CODEX)
         stub.chmod(0o755)
         state = proj / ".git" / "ai-teammates"
 
@@ -1251,7 +1251,7 @@ def check_cards():
             (d / f"{cid}.json").write_text(json.dumps(c))
 
         def go(cid, mode, **extra):
-            env = {**base, "AI_TEAMMATES_CLAUDE_BIN": str(stub), "STUB_MODE": mode, **extra}
+            env = {**base, "AI_TEAMMATES_CODEX_BIN": str(stub), "STUB_MODE": mode, **extra}
             p = subprocess.run([sys.executable, str(hooks / "seat.py"), "run", "--card", cid], cwd=proj,
                                env=env, capture_output=True, text=True, timeout=120)
             row = None
@@ -1267,6 +1267,22 @@ def check_cards():
                                     if t["id"] == cid)
         expect = lambda desc, cond: (ok if cond else bad)(f"cards: {desc}")
 
+        mk("CAP-1", budget={"minutes": 1, "tool_calls": 20, "tokens": 3})
+        p, row = go("CAP-1", "edit_ok")
+        expect("native cumulative token limit refuses a successful edit before committing",
+               row and row["status"] == "over_budget" and not row["head"] and p.returncode == 1)
+        mk("CAP-2", budget={"minutes": 1, "tool_calls": 20, "tokens": 0})
+        p, row = go("CAP-2", "edit_ok")
+        expect("a zero token budget prevents launch", row is None and p.returncode == 1)
+        mk("REVIEW-1")
+        review_prompt = Path(td) / "review-prompt.txt"
+        review_env = {**base, "STUB_MODE": "edit_ok", "AI_TEAMMATES_CODEX_BIN": str(stub),
+                      "STUB_OUT": str(review_prompt)}
+        reviewed = subprocess.run([sys.executable, str(hooks / "cto_codex.py"), "card", "Review the result", "REVIEW-1"],
+                                  cwd=proj, env=review_env, capture_output=True, text=True, timeout=60)
+        history = json.loads((proj / ".ai-teammates/cards/REVIEW-1.json").read_text()).get("runs", [])
+        expect("named handoff runs the worker and gives the CTO the verified outcome", reviewed.returncode == 0
+               and history and history[-1]["status"] == "done" and "CARD REVIEW-1: done" in review_prompt.read_text())
         # too big to be one task: refused BEFORE anything is launched or spent
         mk("T-8", scope={"edit": [f"src/f{i}.txt" for i in range(6)]})
         p, row = go("T-8", "edit_ok")
@@ -1286,7 +1302,7 @@ def check_cards():
         expect("done: exit 0, diff inside scope, acceptance executed and passed",
                p.returncode == 0 and r and r["status"] == "done" and r["clean"] is True
                and r["files"] == ["src/a.txt"] and r["accept"] == [{"run": "grep -q fixed src/a.txt", "rc": 0}])
-        expect("cost and turns are recorded from the harness", r and r["cost_usd"] == 0.0123 and r["turns"] == 2)
+        expect("wall time and tokens are recorded", r and r["seconds"] >= 0 and r["tokens"]["out"] == 500)
         wt1 = Path(td) / "proj-card-t-1"
         expect("the runner commits as the seat, on its own branch",
                r and g("log", "-1", "--format=%an|%s", cwd=wt1).stdout.strip().startswith("seat:tester|T-1:")
@@ -1295,23 +1311,13 @@ def check_cards():
                board_of("T-1")["status"] == "review" and "orig context" in board_of("T-1")["note"]
                and board_of("T-1")["note"].startswith("run "))
         av = json.loads(argv_out.read_text()) if argv_out.exists() else []
-        joined = " ".join(av)
-        expect("launch argv: acceptEdits, prompts none, isolated from user plugins/MCP, allowlist last",
-               "--permission-prompts none" in joined and "--permission-mode acceptEdits" in joined
-               and "--strict-mcp-config" in joined and "--setting-sources project,local" in joined
-               and "bypassPermissions" not in joined and av[-2:-1] == ["--allowedTools"]
-               and "Bash(python3 .ai-teammates/hooks/card.py accept:*)" in joined)
-        # COST (issue #16): cost was written to the run log only and nothing capped it. The cap is on the
-        # command line (Claude Code stops the run itself), and every run is recorded ON the card.
-        expect("launch argv: the card's cost cap is passed to Claude Code (--max-budget-usd), the allowlist still last",
-               "--max-budget-usd" in av[:-2] and av[av.index("--max-budget-usd") + 1] == "1"
-               and av[-2:-1] == ["--allowedTools"])
-        c1 = json.loads((proj / ".ai-teammates" / "cards" / "T-1.json").read_text())
+        expect("writer uses workspace sandbox, routed model and effort, with native delegation disabled",
+               av and av[:2] == ["gpt-6-luna", "workspace-write"] and av[3] == "low" and "multi_agent" in av)
+        c1 = json.loads((proj / ".ai-teammates/cards/T-1.json").read_text())
         last = (c1.get("runs") or [{}])[-1]
-        expect("the run is recorded on the card: status, seat, model, cost, tokens, and the total spent",
-               last.get("status") == "done" and last.get("cost_usd") == 0.0123 and last.get("seat") == "tester"
-               and last.get("model") and last.get("tokens") == {"in": 3010, "out": 500}
-               and c1.get("spent_usd") == 0.0123)
+        expect("cumulative usage counted once and caps recorded on the card",
+               last.get("tokens") == {"in": 3010,"out": 500} and last.get("cap_tokens") == 100000
+               and c1.get("spent_tokens") == 3510)
         expect("the seat's prompt is the card and only the card",
                "CARD T-1" in av[2] and "DONE WHEN" in av[2] and "orig context" not in av[2])
         expect("the prompt states what must be TRUE and does not hand the seat the shell to paste "
@@ -1343,7 +1349,7 @@ def check_cards():
                "WAITING ON THE HUMAN" in pend and "T-5" in pend and "log in to the staging service" in pend)
         mk("T-7")
         p, r = go("T-7", "fail_rc")
-        expect("a harness that dies is failed", r and r["status"] == "failed" and "exit 1" in r["reason"])
+        expect("a harness that dies is failed", r and r["status"] == "failed" and "closed the stream" in r["reason"])
 
         # a card run must be visible to the double-run guard (it parsed "--card" as the seat's name)
         fake = subprocess.Popen(["bash", "-c", 'exec -a "python3 /elsewhere/.ai-teammates/hooks/seat.py '
@@ -1377,6 +1383,11 @@ def check_cards():
         mk("T-13")
         p, r = go("T-13", "denied_twice", STUB_HOOKS=str(hooks))
         expect("a SECOND refused command ends the run: blocked (exit 75)", r and r["status"] == "blocked" and p.returncode == 75)
+
+        mk("LOOP-1")
+        p, row = go("LOOP-1", "failed_commands")
+        expect("two native command failures requiring the owner stop the seat", p.returncode == 75 and
+               row and row["status"] == "blocked" and "permission" in row["reason"])
 
         # a hang is killed, and so are its children
         pidf = Path(td) / "pid"
@@ -1533,72 +1544,41 @@ def check_cards():
                and json.loads((proj / ".ai-teammates" / "cards" / "P-3.json").read_text())["parent"] == "P"
                and "P" in board_of("P-3")["note"].split())
 
-        # COST CAPS (issue #16)
+        # Time and token limits
         cardf = lambda cid: json.loads((proj / ".ai-teammates" / "cards" / f"{cid}.json").read_text())
         lastrun = lambda cid: (cardf(cid).get("runs") or [{}])[-1]
-        mk("U-1", budget={"minutes": 1, "tool_calls": 20, "usd": 0.5})
-        p, r = go("U-1", "over_budget", STUB_ARGV_OUT=str(argv_out))
-        av = json.loads(argv_out.read_text())
-        expect("a run that Claude Code stops at the card's cap ends `over_budget`: not committed, and the reason says so",
-               r and r["status"] == "over_budget" and r["clean"] is False and not r["head"] and p.returncode == 1
-               and "0.5" in r["reason"] and av[av.index("--max-budget-usd") + 1] == "0.5")
-        expect("...the board card is blocked with the reason, and the card records the money that was spent",
-               lastrun("U-1").get("status") == "over_budget" and cardf("U-1").get("spent_usd") == 0.61)
+        mk("U-1", budget={"minutes": 1, "tool_calls": 20, "tokens": 3000})
+        p,r = go("U-1","over_budget")
+        expect("token cap kills a still-running process and prevents a commit",
+               r and r["status"] == "over_budget" and not r["head"] and r["seconds"] < 20
+               and lastrun("U-1")["tokens"] == {"in":3010,"out":500})
         mk("U-2", budget={"minutes": 1, "tool_calls": 20, "usd": 0.5})
-        p, r = go("U-2", "edit_ok", STUB_COST="0.7")
-        expect("CONTROL: a run that ENDED normally is judged by its checks, even when its last step went over the cap",
-               r and r["status"] == "done" and r.get("over_cap") is True and "over its" in p.stdout)
-        mk("U-3", budget={"minutes": 1, "tool_calls": 20, "usd": 50})
-        rc, out = cli("check", "U-3")
-        expect("a card asking for more than the owner's maximum per card is refused by card.py check",
-               rc == 1 and "budget over $5" in out)
-        mk("U-3", budget={"minutes": 1, "tool_calls": 20, "usd": 0})
-        rc, out = cli("check", "U-3")
-        expect("...and so is a cap of zero", rc == 1 and "budget.usd" in out)
-        rc, out = cli("new", "U-4", "--seat", "tester")
-        expect("a new card carries the default cap, where the CTO can see and lower it",
-               (cardf("U-4").get("budget") or {}).get("usd") == 1.0)
-
-        cfgp = proj / ".ai-teammates" / "config.json"
-        seatpy = lambda *a: subprocess.run([sys.executable, str(hooks / "seat.py"), *a], cwd=proj, env=base,
-                                           capture_output=True, text=True)
-        today = seatpy("spend").stdout
-        expect("seat.py spend: one line with today's card spend against the daily budget",
-               re.search(r"spend: today \$\d+\.\d\d of \$20\.00", today))
-        cfgp.write_text(json.dumps({"protected_branches": ["main", "development"], "budget": {"daily_usd": 1.5}}))
-        mk("U-5")
-        n_rows = len((state / "agent_runs.jsonl").read_text().splitlines())
-        p, r = go("U-5", "edit_ok")
-        expect("a card that could take today's spend over the daily budget is not launched, and the owner is asked",
-               p.returncode == 75 and "daily budget" in p.stdout and r is None
-               and len((state / "agent_runs.jsonl").read_text().splitlines()) == n_rows
-               and not (Path(td) / "proj-card-u-5").exists())
-        cfgp.write_text(json.dumps({"protected_branches": ["main", "development"], "budget": {"daily_usd": 0}}))
-        p, r = go("U-5", "edit_ok")
-        expect("CONTROL: daily_usd 0 switches the daily budget off, and the same card runs",
-               r and r["status"] == "done")
-        cfgp.write_text(json.dumps({"protected_branches": ["main", "development"]}))
-        rep_out = seatpy("report", "--cost").stdout
-        expect("seat.py report --cost: spend per day, per card and per model, with tokens",
-               re.search(r"U-1\s.*0\.610", rep_out) and "per model" in rep_out and "tokens" in rep_out
-               and re.search(r"total\s", rep_out))
-        # a free-form run (the audit seat) is launched from its spec's own command line: it gets the
-        # owner's maximum per run as its cap, since no card sets one
-        (proj / ".ai-teammates" / "agents" / "audit.md").write_text(
-            "---\nname: audit\nseat: Audit\nharness: claude-code\nmodel: m\nread_only: true\nworktree: .\n"
-            "headless: claude -p --tools Read --strict-mcp-config --permission-mode plan\n---\n# a\n")
-        fake = Path(td) / "fakebin"
-        fake.mkdir()
-        (fake / "claude").write_text("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FREE_ARGV\"\necho report\n")
-        (fake / "claude").chmod(0o755)
-        free = Path(td) / "free.txt"
-        subprocess.run([sys.executable, str(hooks / "seat.py"), "run", "audit", "look at it"], cwd=proj,
-                       env={**base, "PATH": f"{fake}:{base['PATH']}", "FREE_ARGV": str(free)},
-                       capture_output=True, text=True, timeout=60)
-        fa = free.read_text().splitlines() if free.exists() else []
-        expect("a free-form seat run is capped at the owner's maximum per run (--max-budget-usd 5)",
-               "--max-budget-usd" in fa and fa[fa.index("--max-budget-usd") + 1] == "5" and fa[-1] == "look at it")
-        (proj / ".ai-teammates" / "agents" / "audit.md").unlink()
+        p,r = go("U-2","edit_ok")
+        expect("old dollar-only cards inherit fresh token caps", r and r["status"]=="done" and r["cap_tokens"]==100000)
+        mk("U-3", budget={"tokens": 500001})
+        rc,out = cli("check","U-3")
+        expect("owner's maximum token cap is checked", rc==1 and "500000 tokens" in out)
+        cli("new","U-4","--seat","tester")
+        expect("new cards carry time and token caps", cardf("U-4")["budget"].get("tokens")==100000 and "usd" not in cardf("U-4")["budget"])
+        cfgp = proj / ".ai-teammates/config.json"
+        cfg0 = cfgp.read_text()
+        for key in ("daily_tokens","daily_minutes"):
+            cfgp.write_text(json.dumps({"protected_branches":["main","development"],"budget":{key:1}}))
+            mk("U-5")
+            p,r = go("U-5","edit_ok")
+            expect(f"{key} refuses before launching", p.returncode==75 and r is None and not (Path(td)/"proj-card-u-5").exists())
+        cfgp.write_text(cfg0)
+        for mode in ("no_usage", "untrusted"):
+            mk("U-6")
+            p,r = go("U-6",mode)
+            expect(f"{mode} cannot produce a successful run", p.returncode and r and r["status"]=="failed" and not r["head"])
+        report = subprocess.run([sys.executable,str(hooks/"seat.py"),"report","--usage"],cwd=proj,env=base,capture_output=True,text=True)
+        expect("usage report includes tokens and minutes", "U-1" in report.stdout and "tokens" in report.stdout and "minutes" in report.stdout)
+        (proj / ".ai-teammates/agents/audit.md").write_text("---\nname: audit\nseat: Audit\nharness: codex\nmodel: m\nread_only: true\nworktree: .\n---\n")
+        p = subprocess.run([sys.executable,str(hooks/"seat.py"),"run","audit","look at it"],cwd=proj,
+                           env={**base,"AI_TEAMMATES_CODEX_BIN":str(stub),"STUB_MODE":"audit","STUB_ARGV_OUT":str(argv_out)},capture_output=True,text=True)
+        expect("free-form audit uses a supervised read-only Codex thread", p.returncode==0 and json.loads(argv_out.read_text())[1]=="read-only")
+        (proj / ".ai-teammates/agents/audit.md").unlink()
 
         # LANDING (issue #3): a card reaches the integration branch only after its checks pass on the MERGED
         # result. It used to be the CTO's hand-typed `git merge`, and nothing re-ran the card's checks after it.
@@ -1808,16 +1788,16 @@ def check_setup():
         # backend.md keeps that shape, so "a seat is chosen by its name, not its file" stays tested.
         (ai / "agents").mkdir()
         for stem, meta in (("cto", "name: cto\norchestrator: true\n"),
-                           ("backend", "name: backend-db\nmodel: claude-sonnet-5-5\n"),
-                           ("ui-developer", "name: ui-developer\nmodel: claude-sonnet-5-5\n"),
-                           ("security-audit", "name: security-audit\nmodel: claude-sonnet-5-5\n"
+                           ("backend", "name: backend-db\nmodel: gpt-6.2-sol\n"),
+                           ("ui-developer", "name: ui-developer\nmodel: gpt-6.2-sol\n"),
+                           ("security-audit", "name: security-audit\nmodel: gpt-6.2-sol\n"
                                               "launch: claude --model claude-sonnet-5-5 --tools Read,Glob,Grep\n")):
-            (ai / "agents" / f"{stem}.md").write_text(f"---\n{meta}harness: claude-code\n---\n# {stem}\n")
+            (ai / "agents" / f"{stem}.md").write_text(f"---\n{meta}harness: codex\n---\n# {stem}\n")
         base_cfg = {"project": "proj", "protected_branches": ["main", "development"], "guarded_paths": ["src/"],
                     "cards": {"max_edit_files": 4}, "memory": {"retired": ["old-term"]}}
         (ai / "config.json").write_text(json.dumps(base_cfg))
         env = {**os.environ, "GIT_CONFIG_GLOBAL": os.devnull}
-        for k in ("CLAUDE_AGENT_NAME", "AI_TEAMMATES_SEAT", "AI_TEAMMATES_CARD", "AI_TEAMMATES_CLAUDE_BIN"):
+        for k in ("CLAUDE_AGENT_NAME", "AI_TEAMMATES_SEAT", "AI_TEAMMATES_CARD", "AI_TEAMMATES_CODEX_BIN"):
             env.pop(k, None)
         subprocess.run([GIT, "init", "-q", "-b", "main"], cwd=proj, env=env, capture_output=True)
         expect = lambda desc, cond: (ok if cond else bad)(f"setup: {desc}")
@@ -1830,18 +1810,14 @@ def check_setup():
 
         p = setup("--yes")
         c = cfg()
-        expect("--yes configures BOTH memories, scoped to this project, MemPalace first",
+        expect("--yes scopes MemPalace to this project",
                p.returncode == 0 and c.get("memory", {}).get("default") == "mempalace"
-               and c["memory"].get("mempalace_wing") == "proj" and c["memory"].get("claude_mem_projects") == ["proj"])
+               and c["memory"].get("mempalace_wing") == "proj" and "claude_mem_projects" not in c["memory"])
         expect("CONTROL: what setup does not ask about is kept (card limits, retired terms)",
                c.get("cards") == {"max_edit_files": 4} and c["memory"].get("retired") == ["old-term"]
                and c["guarded_paths"] == ["src/"] and "seat_models" not in c)
         expect("--yes on a project with no delegation policy writes block: tasks go through cards",
                c.get("delegation") == {"cto_product_edits": "block"})
-        if not (Path.home() / ".claude-mem" / "settings.json").exists():
-            expect("...and prints the install command of a memory that is not installed",
-                   "npx claude-mem install" in p.stdout)
-
         answers = Path(td) / "answers.json"
         # FOUND 2026-10-29: an answer for a seat that is not there (this file's own docstring example,
         # `backend`, where the seat is named backend-db) was skipped without a word: the owner believed a
@@ -1870,8 +1846,8 @@ def check_setup():
         expect("a dropped seat leaves the team (kept in agents/off/) and a seat's model is changed in its spec",
                not spec("backend") and (ai / "agents" / "off" / "backend.md").exists()
                and re.search(r"^model: m-ui$", spec("ui-developer"), re.M))
-        expect("...and a launch line's --model follows the seat's model",
-               "--model m-audit" in spec("security-audit") and "--model claude-sonnet" not in spec("security-audit"))
+        expect("the read-only audit uses its configured default model",
+               re.search(r"^model: m-audit$", spec("security-audit"), re.M))
 
         # 2026-11-10: setup offered opencode and codex as a seat's harness, months after cards stopped
         # running there. Claude Code is the only harness; another one is refused, changing nothing.
@@ -1879,7 +1855,7 @@ def check_setup():
         answers.write_text(json.dumps({"seats": {"ui-developer": {"harness": "opencode"}}}))
         p = setup("--answers", str(answers))
         expect("a harness other than claude-code is refused, and nothing is changed",
-               p.returncode == 1 and "claude-code" in p.stdout and (ai / "config.json").read_text() == before
+               p.returncode == 1 and "codex" in p.stdout and (ai / "config.json").read_text() == before
                and spec("ui-developer") == before_spec)
 
         answers.write_text(json.dumps({"delegation": "allow"}))
@@ -1900,33 +1876,31 @@ def check_setup():
                p.returncode == 0 and "one of:" in p.stdout and "default" not in c.get("memory", {})
                and c.get("memory", {}).get("retired") == ["old-term"])
 
-        stub = Path(td) / "claude"
-        stub.write_text("#!/bin/sh\n[ \"$2\" = good-model ] || [ \"$2\" = claude-haiku-4-5-20251001 ] || "
-                        "[ \"$2\" = claude-sonnet-5-5 ] || [ \"$2\" = claude-opus-5-5 ] || [ \"$2\" = m-ui ] || "
-                        "[ \"$2\" = m-audit ] || [ \"$2\" = m-cto ] || [ \"$2\" = m-hard ]\n")
+        stub = Path(td) / "codex"
+        stub.write_text(STUB_CODEX)
         stub.chmod(0o755)
         before = (ai / "config.json").read_text()
         answers.write_text(json.dumps({"seat_models": {"hard": "no-such-model"}}))
-        p = setup("--answers", str(answers), "--verify-models", AI_TEAMMATES_CLAUDE_BIN=str(stub))
+        p = setup("--answers", str(answers), "--verify-models", AI_TEAMMATES_CODEX_BIN=str(stub))
         expect("--verify-models: a model that does not answer is named and nothing is written",
                p.returncode == 1 and "no-such-model" in p.stdout and (ai / "config.json").read_text() == before)
         answers.write_text(json.dumps({"seat_models": {"hard": "good-model"}}))
-        p = setup("--answers", str(answers), "--verify-models", AI_TEAMMATES_CLAUDE_BIN=str(stub))
+        p = setup("--answers", str(answers), "--verify-models", AI_TEAMMATES_CODEX_BIN=str(stub))
         expect("--verify-models: when every model answers, the choice is written",
                p.returncode == 0 and cfg().get("seat_models") == {"hard": "good-model"})
 
         # TOOLS, PLAN AND SPEND (issue #18): what a new owner is asked first. Until 2026-11 setup asked
         # nothing about how Claude Code is paid for, the CTO's effort, or what a day may cost.
-        answers.write_text(json.dumps({"billing": "api", "cto_effort": "max", "daily_usd": 7.5, "card_usd": 0.5}))
+        answers.write_text(json.dumps({"billing": "api", "cto_effort": "max", "daily_minutes": 75, "daily_tokens": 70000, "card_tokens": 5000}))
         p = setup("--answers", str(answers))
         c = cfg()
         expect("tools and plan: billing, the CTO's effort, the daily budget and the default cap per card are written",
                p.returncode == 0 and c["cto"].get("billing") == "api" and c["cto"].get("effort") == "max"
-               and c.get("budget") == {"daily_usd": 7.5} and c.get("cards") == {"max_edit_files": 4, "default_usd": 0.5})
+               and c.get("budget") == {"daily_minutes":75, "daily_tokens":70000} and c.get("cards") == {"max_edit_files": 4, "default_tokens": 5000})
         expect("...and it says which coding tool runs the team, and that it is signed in",
-               "Claude Code" in p.stdout and "signed in" in p.stdout)
+               "Codex CLI" in p.stdout and "signed in" in p.stdout)
         before = (ai / "config.json").read_text()
-        for bad_answers, word in (({"daily_usd": "lots"}, "number"), ({"card_usd": 50}, "most one card run may cost"),
+        for bad_answers, word in (({"daily_tokens": "lots"}, "number"), ({"card_tokens": 500001}, "number"),
                                   ({"billing": "barter"}, "one of")):
             answers.write_text(json.dumps(bad_answers))
             p = setup("--answers", str(answers))
@@ -1934,11 +1908,11 @@ def check_setup():
                    p.returncode == 1 and word in p.stdout and (ai / "config.json").read_text() == before)
         out_stub = Path(td) / "signedout"
         out_stub.mkdir()
-        (out_stub / "claude").write_text("#!/bin/sh\necho '{\"loggedIn\": false}'\n")
-        (out_stub / "claude").chmod(0o755)
+        (out_stub / "codex").write_text("#!/bin/sh\nexit 1\n")
+        (out_stub / "codex").chmod(0o755)
         p = setup("--yes", PATH=f"{out_stub}:{env['PATH']}")
         expect("a Claude Code that is not signed in is said so, with the command that fixes it",
-               "claude auth login" in p.stdout)
+               "codex login" in p.stdout)
         expect("no commit in the project yet: the workspace step says so and creates nothing",
                "no commit" in p.stdout and not (Path(td) / "proj-dev").exists())
 
@@ -1950,11 +1924,11 @@ def check_setup():
         wai.mkdir(parents=True)
         shutil.copytree(here, wai / "hooks", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         (wai / "agents").mkdir()
-        (wai / "agents" / "cto.md").write_text("---\nname: cto\norchestrator: true\nharness: claude-code\n---\n# cto\n")
+        (wai / "agents" / "cto.md").write_text("---\nname: cto\norchestrator: true\nharness: codex\n---\n# cto\n")
         (wai / "config.json").write_text(json.dumps({"project": "shop", "protected_branches": ["main", "development"],
                                                      "guarded_paths": ["src/"]}))
-        (ws / ".claude").mkdir()
-        (ws / ".claude" / "settings.json").write_text("{}\n")
+        (ws / ".codex").mkdir()
+        (ws / ".codex" / "hooks.json").write_text("{}\n")
         (ws / "src").mkdir()
         (ws / "src" / "a.ts").write_text("a\n")
         wg = lambda *a, cwd=ws: subprocess.run([GIT, *a], cwd=cwd, env=env, capture_output=True, text=True)
@@ -1984,7 +1958,7 @@ def check_setup():
         committed = wg("show", "--name-only", "--format=%an", "main").stdout.split()
         expect("...as the owner, and only the install's own files",
                committed[:1] == ["owner"] and committed[1:]
-               and all(f.startswith((".ai-teammates/", ".claude/")) for f in committed[1:]))
+               and all(f.startswith((".ai-teammates/", ".codex/")) for f in committed[1:]))
         expect("workspace: --yes deletes nothing, and says what could be cleaned",
                {"old/merged", "old/gone", "old/clean", "old/dirty", "wip/keep"} <= branches()
                and (ws.parent / "shop-clean").exists() and not tags() and "prunable" in wts()
@@ -2107,17 +2081,10 @@ def check_seat_limits():
                all(guard(c, **card_env)[0] == 2 for c in ("git rm b.txt", "git rm -r .", "git rm '*.txt'",
                                                           "git rm a.txt > log", "git rm a.txt b.txt", "rm a.txt",
                                                           "git -C .. rm a.txt", "git --work-tree=/tmp rm a.txt")))
-        argv = subprocess.run([sys.executable, "-c", (
-            "import sys, json; sys.path.insert(0, sys.argv[1]); import cardrun\n"
-            "c = {'id': 'Z-1', 'goal': 'g', 'seat': 's', 'scope': {'edit': ['a.txt']}, 'acceptance': [{'run': 'true'}]}\n"
-            "print(json.dumps([cardrun.card_command({}, c, 'p', 'm'), cardrun.card_command({'read_only': 'true'}, c, 'p', 'm')]))"),
-            str(here)], cwd=td, env=base, capture_output=True, text=True)
-        try:
-            wr, ro = json.loads(argv.stdout.strip().splitlines()[-1])
-        except (ValueError, IndexError):
-            wr, ro = [], []
-        expect("the writer seat is launched able to run git rm; a read-only seat is not",
-               "Bash(git rm:*)" in (wr[-1] if wr else "") and "git rm" not in (ro[-1] if ro else "git rm"))
+        codex_env = {**card_env, "AI_TEAMMATES_RUNTIME": "codex", "AI_TEAMMATES_SEAT": "Tester"}
+        expect("Codex writer can delete its card file and a read-only seat cannot",
+               guard("git rm a.txt", **codex_env)[0] == 0 and
+               guard("git rm a.txt", **{**codex_env, "AI_TEAMMATES_READ_ONLY":"1"})[0] == 2)
 
         seat_env = {"AI_TEAMMATES_SEAT": "Tester", "CLAUDE_AGENT_NAME": "tester"}
         denied = ["git push origin feat", "git -C . push", "git --no-pager -c a=b push origin", "cd /tmp && rm -rf foo",
@@ -2406,7 +2373,7 @@ def check_memlife():
         (ai / "cards").mkdir()
         shutil.copytree(here, ai / "hooks", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         (ai / "agents" / "tester.md").write_text(
-            "---\nname: tester\nseat: Tester\nharness: claude-code\nmodel: m\nbranch_prefix: feat/t-\nwrites: true\n---\n# t\n")
+            "---\nname: tester\nseat: Tester\nharness: codex\nmodel: m\nbranch_prefix: feat/t-\nwrites: true\n---\n# t\n")
         cfgp = ai / "config.json"
         cfgp.write_text(json.dumps({"protected_branches": ["main", "development"],
                                     "memory": {"mempalace_wing": "p", "mempalace_palace": str(palace)}}))
@@ -2490,12 +2457,13 @@ def check_memlife():
         state = proj / ".git" / "ai-teammates"
         state.mkdir(exist_ok=True)
         row = {"ts": "2026-10-03T10:00:00+00:00", "agent": "tester", "model": "m", "card": "X-1", "status": "done",
-               "seconds": 21, "cost_usd": 0.05, "branch": "feat/t-x-1", "head": "abc1234",
+               "seconds": 21, "tokens": {"in": 500, "out": 25}, "branch": "feat/t-x-1", "head": "abc1234",
                "files": ["f.txt"], "diffstat": "1 file changed", "clean": True}
         runs = state / "agent_runs.jsonl"
         runs.write_text(json.dumps(row) + "\n")
         filed = lambda cid: [d for d in memlife.bridge("list", mc) if d["meta"].get("source_file") == f"card:{cid}"]
         r = ml("file", "X-1", "--dry-run")
+        expect("the filed card reports elapsed time and observed tokens", "21s, 525 tokens" in r.stdout)
         expect("--dry-run prints the record and files nothing",
                r.returncode == 0 and "Move deploy to Kiwihost" in r.stdout and not filed("X-1"))
         r1, r2 = ml("file", "X-1"), ml("file", "X-1")
@@ -2676,17 +2644,18 @@ def check_launcher():
         sh = lambda *a: subprocess.run([GIT, *a], cwd=proj, env=base, capture_output=True, text=True)
         sh("init", "-q", "-b", "main"); sh("config", "user.email", "t@t"); sh("config", "user.name", "t")
         sh("commit", "-q", "--allow-empty", "-m", "i")
-        shutil.copy(here / "_config.py", hk / "_config.py")
-        (proj / ".ai-teammates" / "config.json").write_text(json.dumps(
-            {"cto": {"provider": "anthropic", "model": "stubmodel"}, "protected_branches": ["main"]}))
+        for module in ("_config", "codex_runtime", "codex_hooks", "codex_session", "cto_codex", "run_budget", "card"):
+            shutil.copy(here / (module + ".py"), hk)
+        cfgp = proj / ".ai-teammates/config.json"
+        cfgp.write_text(json.dumps({"protected_branches":["main"]}))
         stubdir = Path(td) / "bin"
         stubdir.mkdir()
-        (stubdir / "claude").write_text(
-            "#!/bin/sh\nif [ \"$1\" = auth ]; then echo '{\"loggedIn\": true}'; exit 0; fi\n"
-            "printf '%s\\n' \"$@\" > \"$STUB_OUT\"\n")
-        (stubdir / "claude").chmod(0o755)
+        (stubdir / "codex").write_text(STUB_CODEX)
+        (stubdir / "codex").chmod(0o755)
         out = Path(td) / "prompt.txt"
-        env = {**base, "PATH": f"{stubdir}:{base['PATH']}", "STUB_OUT": str(out)}
+        argv_log = Path(td) / "launch.json"
+        env = {**base, "PATH": f"{stubdir}:{base['PATH']}", "AI_TEAMMATES_CODEX_BIN": str(stubdir/"codex"),
+               "STUB_OUT": str(out), "STUB_MODE": "cto", "STUB_ARGV_OUT": str(argv_log)}
 
         def launch(gt_body):
             (hk / "guardrail_test.py").write_text(gt_body)
@@ -2713,70 +2682,14 @@ def check_launcher():
         expect("a clean pre-flight does not invent failures",                                  # it names FAILURE-CATALOGUE
                "FAIL" not in section and "1 checks passed" in section)
 
-        # 2026-10-04: the owner chose the CTO's model AND effort (Opus 5.5, max). Effort lives in
-        # config.json next to the model and must reach the claude command line, or it is a wish.
-        args = prompt.splitlines()
-        expect("no cto.effort configured: no --effort flag (the CLI's own default)", "--effort" not in args)
-        cfgp = proj / ".ai-teammates" / "config.json"
-        for effort, want in (("max", "max"), ("turbo", None)):
-            cfgp.write_text(json.dumps({"cto": {"provider": "anthropic", "model": "stubmodel", "effort": effort},
-                                        "protected_branches": ["main"]}))
-            r, prompt = launch('print("  ok    stub: all fine")\n')
-            args = prompt.splitlines()
-            got = args[args.index("--effort") + 1] if "--effort" in args[:-1] else None
-            if want:
-                expect("cto.effort max reaches the command line as --effort max, with the model",
-                       got == "max" and "stubmodel" in args)
-            else:
-                expect("an unknown cto.effort is refused out loud and the default is used",
-                       got is None and "not low|medium|high|xhigh|max" in r.stdout)
-
-        # 2026-10-05, MEASURED on the owner's sessions: inherited MCP servers were ~100k tokens of a
-        # ~200k baseline, re-sent with every call; reading board.json whole was another ~24k.
-        def with_mcp(value):
-            cto_cfg = {"provider": "anthropic", "model": "stubmodel"}
-            if value is not None:
-                cto_cfg["mcp"] = value
-            cfgp.write_text(json.dumps({"cto": cto_cfg, "protected_branches": ["main"]}))
-            return launch('print("  ok    stub: all fine")\n')[1].splitlines()
-        a = with_mcp(None)
-        expect("by default the CTO starts with NO MCP servers (--strict-mcp-config, no --mcp-config)",
-               "--strict-mcp-config" in a and "--mcp-config" not in a)
-        expect("cto.mcp inherit restores every server of the user's setup", "--strict-mcp-config" not in with_mcp("inherit"))
-        a = with_mcp(".ai-teammates/cto-mcp.json")
-        expect("cto.mcp <file> loads only that file's servers",
-               "--strict-mcp-config" in a and a[a.index("--mcp-config") + 1] == ".ai-teammates/cto-mcp.json"
-               if "--mcp-config" in a else False)
-        brief = "\n".join(a)
-        tools_ok = ("--tools" in a and a.index("--tools") == len(a) - 2
-                    and a[-1] == "Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch,TaskStop")
-        expect("the CTO is offered its working tool set by default, as the LAST option (a prompt after "
-               "--tools would be read as a tool name)", tools_ok)
-        expect("the brief no longer has the CTO read board.json whole at startup, and carries the open cards",
-               "THE BOARD, open cards only" in brief and "board.json             current state" not in brief
-               and "do not read board.json whole" in brief)
-        expect("the guardrails and routing docs are read when needed, not at startup",
-               "Read these when the work calls for them" in brief)
-        # 2026-11-10: bin/cto still had an `ollama launch` path, dead since 2026-09-25. A config that
-        # names another provider is told so; nothing is launched in Claude Code's place.
-        (stubdir / "ollama").write_text("#!/bin/sh\ntouch \"$STUB_OUT.ollama\"\n")
-        (stubdir / "ollama").chmod(0o755)
-        cfgp.write_text(json.dumps({"cto": {"provider": "ollama", "model": "some-model"},
-                                    "protected_branches": ["main"]}))
-        r, prompt = launch('print("  ok    stub: all fine")\n')
-        expect("a config naming another provider stops with the reason, and nothing is launched",
-               r.returncode != 0 and "Claude Code" in r.stdout + r.stderr and not prompt
-               and not Path(str(out) + ".ollama").exists())
-        (stubdir / "ollama").unlink()
-        cfgp.write_text(json.dumps({"cto": {"provider": "anthropic", "model": "stubmodel", "tools": "default",
-                                            "claude_md_excludes": ["~/.claude/CLAUDE.md"]},
-                                    "protected_branches": ["main"]}))
-        a = launch('print("  ok    stub: all fine")\n')[1].splitlines()
-        sj = a[a.index("--settings") + 1] if "--settings" in a[:-1] else "{}"
-        expect("cto.tools default offers everything (no --tools)", "--tools" not in a)
-        expect("cto.claude_md_excludes leaves that CLAUDE.md out, home expanded (--settings claudeMdExcludes)",
-               json.loads(sj).get("claudeMdExcludes") == [os.path.expanduser("~/.claude/CLAUDE.md")])
-
+        expect("headless CTO runs through Codex CLI", "Codex CLI" in r.stdout and "--permission-mode" not in prompt)
+        argv = json.loads(argv_log.read_text())
+        expect("CTO uses Astra xhigh in a guarded workspace", argv[0]=="gpt-6.2-astra" and argv[1]=="workspace-write" and argv[3]=="xhigh")
+        expect("native subagents disabled and open cards carried in brief", "multi_agent" in argv and "THE BOARD, open cards only" in prompt)
+        cfgp.write_text(json.dumps({"cto":{"provider":"unknown"},"protected_branches":["main"]}))
+        r,prompt = launch('print("ok")')
+        expect("unsupported provider refuses before starting a turn", r.returncode and not prompt)
+        cfgp.write_text(json.dumps({"protected_branches":["main"]}))
         # issue #19: the launcher put /usr/bin first in PATH for everybody. The user's own git (new
         # enough) is the one in use; `cto --doctor` prints which.
         real_git = shutil.which(GIT) or GIT
@@ -2826,20 +2739,15 @@ def check_launcher():
                    len(re.findall(r"^\d\. ", ctomd.read_text(encoding="utf-8").split("## The nine", 1)[-1]
                                   .split("\n## ", 1)[0], re.M)) == 9)
 
-        # COST (issue #16). What today has cost goes into the brief (`seat.py spend`, tested for real in
-        # CARDS; here a stand-in proves the launcher carries the line to the model). And a headless run
-        # of the CTO itself, which nobody watches, can be capped: config.json cto.max_usd.
-        (hk / "seat.py").write_text('import sys\nif sys.argv[1:] == ["spend"]:\n'
-                                    '    print("  spend: today $0.42 of $20.00 in 3 card run(s)")\n')
-        cfgp.write_text(json.dumps({"cto": {"model": "stubmodel", "max_usd": 3}, "protected_branches": ["main"]}))
-        a = launch('print("  ok    stub: all fine")\n')[1].splitlines()
-        expect("today's spend is in the brief the model is handed", "spend: today $0.42 of $20.00" in "\n".join(a))
-        expect("cto.max_usd caps a headless CTO run (--max-budget-usd 3)",
-               "--max-budget-usd" in a[:-1] and a[a.index("--max-budget-usd") + 1] == "3")
-        cfgp.write_text(json.dumps({"cto": {"model": "stubmodel"}, "protected_branches": ["main"]}))
-        a = launch('print("  ok    stub: all fine")\n')[1].splitlines()
-        expect("CONTROL: with no cto.max_usd there is no cap flag", "--max-budget-usd" not in a)
-        (hk / "seat.py").unlink()
+        (hk / "seat.py").write_text('import sys\nif sys.argv[1:] == ["spend"]: print("usage today: 3510 tokens")\n')
+        with (hk / "seat.py").open("a") as f:
+            f.write('if sys.argv[1:] == ["run", "--card", "DOC-1"]: print("CARD DOC-1: done")\n')
+        named = subprocess.run(["bash", str(cto), "--card", "DOC-1"], cwd=proj, env=env, capture_output=True, text=True)
+        expect("cto --card delivers the named runner result to review", named.returncode == 0 and "CARD DOC-1: done" in out.read_text())
+        cfgp.write_text(json.dumps({"cto":{"max_tokens":3000,"max_minutes":1}, "protected_branches":["main"]}))
+        r,prompt = launch('print("ok")')
+        expect("headless CTO stops at its token cap and the brief includes usage",
+               r.returncode != 0 and "token cap reached" in r.stderr and "usage today: 3510 tokens" in prompt)
 
 
 def check_selftest_stamp():
@@ -2858,10 +2766,10 @@ def check_selftest_stamp():
         hk = proj / ".ai-teammates" / "hooks"
         hk.mkdir(parents=True)
         (proj / ".ai-teammates" / "agents").mkdir()
-        (proj / ".claude").mkdir()
+        (proj / ".codex").mkdir()
         (proj / "src").mkdir()
         files = {"hook": hk / "guard.py", "config": proj / ".ai-teammates" / "config.json",
-                 "spec": proj / ".ai-teammates" / "agents" / "cto.md", "settings": proj / ".claude" / "settings.json",
+                 "spec": proj / ".ai-teammates" / "agents" / "cto.md", "settings": proj / ".codex" / "hooks.json",
                  "product": proj / "src" / "a.ts"}
         for f in files.values():
             f.write_text("one\n")
@@ -2876,7 +2784,7 @@ def check_selftest_stamp():
                f"and not with product code (got {changed})",
                changed == {"hook": True, "config": True, "spec": True, "settings": True, "product": False}
                and fp() == base)
-        expect("...and with the versions of python, git and claude", fingerprint(proj, versions="v2") != base)
+        expect("...and with the versions of Python, Git and Codex", fingerprint(proj, versions="v2") != base)
         stamp = Path(td) / "selftest.json"
         now = time.time()
         expect("never run here: due", selftest_due(stamp, base, now)[0] is True)
@@ -3202,36 +3110,11 @@ def check_scrubber():
 
 
 def check_live(all_seats):
-    """The only proof that the runtime honours the config."""
-    print("\n  LIVE — launch each seat and ask it to run a denied command")
-    for name, a in all_seats.items():
-        headless = a.get("headless")
-        wt = (REPO / a.get("worktree", ".")).resolve()
-        if not headless or not wt.exists():
-            print(f"  skip  {name}: no headless command or worktree")
-            continue
-        # The probe matches the `git push*` deny but is harmless if it RUNS:
-        # the remote does not exist, and git's error proves execution. It used
-        # to be `git push origin main` - a failed deny would have pushed.
-        probe = "git push ai-teammates-probe HEAD"
-        cmd = headless + " " + shlex.quote(f"Run exactly this shell command and report the result: {probe}")
-        try:
-            p = subprocess.run(cmd, shell=True, cwd=str(wt), capture_output=True,
-                               text=True, timeout=180)
-            blob = re.sub(r"\x1b\[[0-9;]*m", "", p.stdout + p.stderr).lower()
-        except subprocess.TimeoutExpired:
-            bad(f"{name}: live probe timed out")
-            continue
-        executed = "does not appear to be a git repository" in blob
-        # A harness that never started also "did not execute". Silence is not
-        # a refusal: require a clean exit with output before crediting it.
-        if executed:
-            bad(f"{name}: runtime EXECUTED the denied push")
-        elif p.returncode != 0 or not blob.strip():
-            bad(f"{name}: inconclusive — harness exited {p.returncode}"
-                f"{' with no output' if not blob.strip() else ''}")
-        else:
-            ok(f"{name}: claude-code answered without executing (plan mode)")
+    import os
+    import codex_session
+    result = codex_session.run(REPO, os.environ, "gpt-6.2-sol", "medium", "", True,
+                               {"minutes": 0.5, "tokens": 1, "tool_calls": 1}, check_only=True)
+    (ok if result["status"] == "done" else bad)("Codex effective hook trust: " + (result["reason"] or "verified"))
 
 
 def run(check, *args):
@@ -3248,11 +3131,13 @@ def main():
     import time
     s = seats()
     print(f"  {len(s)} seats defined")
+    (ok if (REPO / ".codex" / "hooks.json").is_file() and
+     s.get("cto", {}).get("harness") == "codex" else bad)("installer registers the CTO and Codex hooks")
     # About THIS project, right now: cheap, and run at every start.
     project = ((check_static, (s,)), (check_tracked, ()), (check_hook, ()), (check_delegation_policy, ()),
                (check_models, (s,)), (check_parity, ()))
     # The framework's code, executed in throwaway repositories: the self-test.
-    selftest = ((check_codex_routes, ()), (check_codex_patches, ()), (check_harness, ()), (check_parity_rules, ()), (check_guard, ()), (check_loopguard, ()),
+    selftest = ((check_codex_budgets, ()), (check_codex_routes, ()), (check_codex_patches, ()), (check_harness, ()), (check_parity_rules, ()), (check_guard, ()), (check_loopguard, ()),
                 (check_cards, ()), (check_delegation_report, ()), (check_setup, ()), (check_seat_limits, ()),
                 (check_memory, ()), (check_memslice, ()), (check_memlife, ()), (check_fact_review, ()),
                 (check_launcher, ()), (check_selftest_stamp, ()), (check_any_machine, ()), (check_board_digest, ()), (check_dashboard, ()),

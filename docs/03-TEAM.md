@@ -15,49 +15,40 @@ A seat is a markdown file in `.ai-teammates/agents/` whose frontmatter is read b
 ---
 name: ui-developer
 seat: UI Developer
-harness: claude-code
-model: claude-sonnet-5-5
+harness: codex
+model: gpt-6.2-sol
 writes: true                       # may change files (a card seat). Or: read_only: true
-allow: Read,Glob,Grep,Edit,Write   # tools it may use without asking; a card can add more
 worktree: ../PROJECT-ui            # only for free-form runs; card runs get their own
 branch_prefix: feat/ui-
 ---
 ```
 
-- **harness** — the runtime, always `claude-code`: that is where the hooks that
+- **harness** — the runtime, always `codex`: that is where the hooks that
   enforce scope, loops and budget fire. Any other value is refused.
 - **model** — the default brain; a card's `tier` picks the model per card (see
   [04-ROUTING](04-ROUTING.md)).
-- **writes / read_only** — a seat that changes files must say so; the safety test
-  refuses a writer whose launch is not `acceptEdits` + prompts denied + allowlist.
-- **worktree** — its own checkout. A card run creates a fresh one per card.
+- **writes / read_only** selects the workspace-write or read-only sandbox.
+- **worktree** identifies the checkout for a free-form audit. Each card gets its own worktree.
 
-The launch command for a card is built by `cardrun.card_command`, not written in
-the spec, so the permission flags cannot drift away from what is tested. The unit of
-work is a **task card**, not a free-form instruction: see [05-CTO](05-CTO.md) and
-`cto.md` for how one is written and run (`seat.py run --card <ID>`).
-
----
+`seat.py run --card <ID>` reads the seat and the card, then launches a supervised Codex thread.
 
 ## The roles
 
 Start with these four. Add only when a real task does not fit.
 
 ### UI developer
-Components, layout, styling, screenshot-driven iteration. Card seat on Claude Code
+Components, layout, styling, screenshot-driven iteration. Card seat on Codex CLI
 (`writes: true`). Models are multimodal, so a card can ask it to compare against a
 screenshot. Cannot push, deploy, touch secrets, or edit outside the card's files.
 
 ### Backend
-API endpoints, data access, migrations. Card seat on Claude Code (`writes: true`).
+API endpoints, data access, migrations. Card seat on Codex CLI (`writes: true`).
 Use the `hard` tier when the task is a reasoning problem rather than a typing problem.
 Cannot push, deploy, or `ssh`. Schema changes are reviewed before they run.
 
 ### Security audit
 Read-only. Finds problems, fixes nothing.
-**Claude Code `--permission-mode plan`** — cannot write, by construction, not by
-instruction. Run it on the `hard` tier: audits are where a strong model has repaid
-its cost.
+The read-only sandbox restricts filesystem writes. Use the hard tier for complex reviews.
 
 ### Infrastructure
 Deploys, DNS, server config.
@@ -69,23 +60,9 @@ deploy.
 
 ## What binds a seat
 
-A card seat launches with `--permission-mode acceptEdits --permission-prompts none`
-and an explicit tool allowlist. Anything outside the allowlist would need an
-approval, and with no one to ask it is denied; `loopguard` turns that denial into a
-`BLOCKED` report and ends the run rather than letting the seat try variants. The
-hooks (`guard.py`) deny any edit outside the card's `scope.edit` while it works.
-`--setting-sources project,local --strict-mcp-config` keep the seat away from your
-own plugins and MCP servers, so memory reaches it only as the slice on the card.
-
-`guardrail_test.py` asserts this against the argv that would actually launch, and
-executes the scope guard, rather than trusting the docs.
-
-A seat on any other harness is refused: by `seat.py run`, by `cto setup`, and by the
-STATIC check at pre-flight. Why: the History note in [04-ROUTING](04-ROUTING.md).
-
----
-
-## Launching one
+The supervisor selects the sandbox and disables approval requests and native subagents.
+Trusted pre-tool hooks check allowed commands and every path in a patch. The runner checks
+the finished Git diff and acceptance commands again. Scope and budget come from the card.
 
 ```bash
 python3 .ai-teammates/hooks/card.py new DOC-2 --seat ui-developer --tier mechanical --title "..." --goal "..."
@@ -103,13 +80,13 @@ The runner handles what has bitten us:
   card whose `depends_on` cards are not merged into the integration branch yet
 - gives each card its own worktree and branch off the integration branch, and
   archives (tags) an earlier unfinished attempt instead of reusing its leftovers
-- kills a run that passes its wall-time or tool-call budget, and its children; Claude Code
-  stops a run at the card's cost cap (`budget.usd`), which ends it `over_budget`
-- does not launch a card that could take the day's card runs over `budget.daily_usd`
+- stops a model run at the wall-time deadline or first token report at or above its cap
+- reserves the run's time and token allowances against shared daily limits
+
 - computes the diff from git, checks it against the card's scope, **executes** the
   acceptance commands, and only then commits as `seat:<name>`
-- records status, cost, tokens, branch, files and acceptance results on the run, appends
-  the run and its cost to the card file itself (`runs`, `spent_usd`), and moves the board card
+- records status, seconds, tokens, branch, files and acceptance results on the run, appends
+  the run and token total to the card file itself (`runs`, `spent_tokens`), and moves the board card
 - `seat.py land <ID>` merges a done card in a scratch worktree, re-runs its acceptance on
   the merged result, and only then moves the integration branch. A failure or a conflict
   leaves the branch as it was; a conflict is recorded for the owner, never resolved.
@@ -123,7 +100,7 @@ The runner handles what has bitten us:
 
 `cto setup` keeps or drops each seat (a dropped one moves to `.ai-teammates/agents/off/` and an
 upgrade leaves it there), sets each seat's model in its spec, and the model per card
-tier (`seat_models`). Every seat runs on Claude Code. In an answers file a seat is named by
+tier (`seat_models`). Every seat runs on Codex CLI. In an answers file a seat is named by
 the `name:` in its spec, not its file name; a name that is not a seat refuses and changes nothing.
 
 ## Adding a teammate
@@ -131,8 +108,8 @@ the `name:` in its spec, not its file name; a name that is not a seat refuses an
 Only when a real task does not fit an existing role. Then:
 
 1. **Name the task type**, not the technology. "Data migration", not "Postgres".
-2. **Say what it may do.** The harness is always `claude-code`. Writes product code →
-   `writes: true`. Read-only → `read_only: true` (plan mode).
+2. **Say what it may do.** The harness is always `codex`. Writes product code →
+   `writes: true`. Read-only → `read_only: true` (read-only sandbox).
 3. **Pick the model from measurement.** Run the candidate on one real card from
    your repo and compare. Leaderboards do not know your codebase.
 4. **Write the allowlist before the first run**, not after.

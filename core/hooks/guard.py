@@ -1354,6 +1354,72 @@ HANDLERS = (check_blocked_gate, check_card_scope, check_card_shell, check_seat_d
             check_framework_source, check_guardrail_files, check_frontend_edit, check_delegation, check_git)
 
 
+def codex_cto_command(ti):
+    """Headless commands still require a built-in or owner-configured prefix."""
+    command = ti.get("command", "") if isinstance(ti, dict) else ""
+    if isinstance(command, str) and not re.search(r"[;&|$`<>\\\n\r()]", command):
+        try:
+            words = shlex.split(command)
+            if words and words[0] in {"git", "curl", "npm", "rg", "ls", "cat", "pwd", "head", "tail",
+                                       "pgrep", "ps", "md5", "shasum"}:
+                return
+            helpers = ("seat", "seat_status", "board", "review", "flow", "facts", "guardrail_test", "prepush",
+                       "check_build_env", "session_end", "loopguard", "card", "memslice", "memlife")
+            if any(words[:2] == ["python3", f".ai-teammates/hooks/{name}.py"] for name in helpers):
+                return
+            for entry in (_config.load().get("cto") or {}).get("allow", []):
+                prefix = shlex.split(entry)
+                if prefix and words[:len(prefix)] == prefix:
+                    return
+        except (ValueError, TypeError):
+            pass
+    block("cto-command", "This headless command has no matching approved prefix.",
+          "Use an approved project command or ask the owner.")
+
+
+def codex_seat_tool(tool, ti):
+    """Codex exposes shell and MCP tools independently of the filesystem sandbox."""
+    if tool not in ("apply_patch", "Bash", "view_image", "update_plan"):
+        block("seat-tool", f"{tool} is outside the supervised seat's tool set.", "Use the card's local tools.")
+    readonly = os.environ.get("AI_TEAMMATES_READ_ONLY") == "1"
+    if tool == "apply_patch" and readonly:
+        block("read-only", "This seat is read-only.", "Report the finding.")
+    if tool != "Bash":
+        return
+    cmd = ti.get("command", "") if isinstance(ti, dict) else ""
+    # Native Codex shell reads replace Read, Glob and Grep. Treat shell syntax
+    # and options that can launch programs or redirect output as separate capabilities.
+    if not isinstance(cmd, str) or re.search(r"[;&|`$<>\\\n\r]", cmd):
+        block("seat-command", "The seat needs a single local command.", "Use a simple read or the card self-check.")
+    try:
+        args = shlex.split(cmd)
+    except ValueError:
+        args = []
+    if args and args[0] in ("cat", "pwd", "ls", "head", "tail"):
+        return
+    flags = {"--", "--files", "-n", "-i", "-F", "-l", "-w", "--hidden", "--line-number",
+             "--no-pager", "--oneline", "--stat", "--short", "--name-only", "--cached", "--staged"}
+    if args and (args[0] in ("rg", "grep") or args[:2] in (["git", "diff"], ["git", "status"], ["git", "log"], ["git", "show"])):
+        if all(not arg.startswith("-") or arg in flags for arg in args[1:]):
+            return
+    cp = os.environ.get("AI_TEAMMATES_CARD")
+    if cp and not readonly:
+        if args == ["python3", ".ai-teammates/hooks/card.py", "accept"] or args[:2] == ["git", "rm"]:
+            return   # check_card_shell checks every git-rm target
+        try:
+            import card as cardmod
+            data = json.loads(Path(cp).read_text())
+            if not cardmod.allow_problems(data):
+                for item in data.get("allow", []):
+                    match = cardmod.ALLOW_RE.fullmatch(item)
+                    prefix = shlex.split(match[1])
+                    if args == prefix or (match[2] and args[:len(prefix)] == prefix):
+                        return
+        except (OSError, ValueError, TypeError):
+            pass
+    block("seat-command", "The command is outside this seat's allowlist.", "Use the reads or checks on the card.")
+
+
 def codex_patch_paths(command):
     """Return every touched path, including both ends of a move, or refuse the patch."""
     lines = command.splitlines() if isinstance(command, str) else []
@@ -1392,6 +1458,13 @@ def main():
         log("override", {"tool": tool, "reason": override[:200]})
         sys.exit(0)
 
+    if CODEX and os.environ.get("AI_TEAMMATES_SEAT"):
+        codex_seat_tool(tool, ti)
+    if CODEX and os.environ.get("CLAUDE_AGENT_NAME") == "cto" and tool not in ("apply_patch", "Bash", "view_image", "update_plan"):
+        block("cto-tool", f"{tool} is outside the CTO tool set.", "Use the supervised card runner for delegation.")
+    if (CODEX and tool == "Bash" and os.environ.get("CLAUDE_AGENT_NAME") == "cto"
+            and os.environ.get("AI_TEAMMATES_HEADLESS") == "1"):
+        codex_cto_command(ti)
     if tool == "apply_patch":
         try:
             paths = codex_patch_paths(ti.get("command") if isinstance(ti, dict) else None)

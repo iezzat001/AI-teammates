@@ -51,7 +51,7 @@ After you change hooks, re-run `ai-teammates install` in the project: it copies 
 ## Where things are
 
 ```
-bin/cto                   the launcher: pre-flight, the brief, starting Claude Code
+bin/cto                   the launcher: pre-flight, the brief, starting Codex CLI
 install.sh                installs into a project; also `ai-teammates doctor|uninstall`
 core/hooks/               every hook and CLI (Python, standard library only)
   guard.py                PreToolUse: blocks unsafe tool calls

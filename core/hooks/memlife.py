@@ -463,6 +463,9 @@ def draft_record(cid: str) -> str:
         raise memslice.MemError(f"card {cid} has no finished run to record (last status: "
                                 f"{(r or {}).get('status', 'never ran')}). Only a done card is a decision.")
     files = r.get("files") or []
+    usage = r.get("tokens") or {}
+    count = sum(usage.get(k, 0) for k in ("in", "out"))
+    spent = f"{count} tokens" if usage else "tokens unavailable"
     checks = "; ".join(a.get("why") or a.get("run", "")[:60] for a in (c.get("acceptance") or []))
     return "\n".join([
         f"CARD {cid} done {str(r.get('ts', ''))[:10]} - {c.get('title') or c.get('goal', '')[:80]}",
@@ -470,7 +473,7 @@ def draft_record(cid: str) -> str:
         f"Changed: {', '.join(files) or 'see branch'} ({r.get('diffstat') or 'no diffstat'}) "
         f"on {r.get('branch')} @{r.get('head')}",
         f"Verified by: {checks or 'its acceptance checks'}",
-        f"Delivered by {r.get('agent')} on {r.get('model')} in {r.get('seconds')}s, ${float(r.get('cost_usd') or 0):.3f}",
+        f"Delivered by {r.get('agent')} on {r.get('model')} in {r.get('seconds')}s, {spent}",
         "If this changed what is true now (a tool, a host, a rule), record it: "
         "memlife.py fact set \"<topic>\" \"<what is true now>\""])
 

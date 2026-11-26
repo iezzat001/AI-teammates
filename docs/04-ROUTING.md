@@ -1,8 +1,8 @@
 # Routing: which seat gets the card, on which model
 
-## Codex CLI migration
+## Codex CLI team
 
-The proposed CTO runs on GPT-6.2-Astra with extra-high reasoning (`xhigh`). Choose the seat
+The CTO runs on GPT-6.2-Astra with extra-high reasoning (`xhigh`). Choose the seat
 by ownership, then choose the worker model by the difficulty of the card. A backend seat can
 use Luna for a rename and Sol for a migration.
 
@@ -17,7 +17,7 @@ Keep Astra off the normal worker routes. Move a card from Luna to Sol when its c
 a case the mechanical edit missed. Give the CTO the evidence if a hard card still needs an
 architectural decision. A missing credential or ambiguous requirement should go to the owner.
 
-Preview the route for a tier or a stored card. The latter respects an explicit `card.model`.
+Inspect the route for a tier or a stored card. The latter respects an explicit `card.model`.
 `--verify` checks the model and effort together against the selected CLI's catalog.
 
 ```sh
@@ -36,159 +36,56 @@ jobs. Luna low matched 3/4 on each, Luna medium matched 3/4 and 2/4, and Sol med
 four traces against a reference implementation. Use the project's own card outcomes, including
 retries, to refine these starting tiers.
 
-**Cutover status.** The launcher and supervised card runs still use Claude Code. Codex reports
-tokens, while the current runner enforces per-run and daily dollar limits. The choice of
-budget enforcement determines how the new runner can start unattended jobs.
+## Time and token budgets
 
-## Current Claude Code runtime
+| Scope | Tokens | Time |
+|---|---:|---:|
+| Default card or read-only audit | 100,000 | 15 minutes |
+| Maximum card and default headless CTO | 500,000 | 30 minutes |
+| All supervised runs per project and local day | 2,000,000 | 240 run-minutes |
 
-**SUPERSEDED 2026-11-26.** The earlier claim that only Claude Code supports pre-tool hooks
-is obsolete. Codex CLI also supports them. Its file-edit payload and approval response
-contracts differ. Codex patches need every affected path checked, including move destinations.
-An action requiring owner approval must receive a supported blocking decision. [Codex hooks](https://learn.chatgpt.com/docs/hooks)
+Set `budget.tokens` and `budget.minutes` on a card. In project config, use
+`cards.default_tokens`, `cards.default_minutes`, `cards.max_tokens`, and `cards.max_minutes`.
+A headless CTO accepts `cto.max_tokens` and `cto.max_minutes`. Daily limits are
+`budget.daily_tokens` and `budget.daily_minutes`. Setting a daily dimension to zero disables
+that dimension. Per-run caps must be positive. Tool-call and idle limits also apply to cards.
 
-**The choice that is left is the model.** The CTO's is fixed in config; a seat's is chosen per
-card by `tier`. Decided 2026-10-04 with the owner: the CTO runs on the strongest model at
-maximum effort, because judgement, decomposition and review are its whole job and it is the one
-agent that can make every other run wasted; the seats run on the cheapest model that can do the
-card, because a card is small by construction and its result is verified by executed checks.
+Each run reserves both allowances before launching. Sibling worktrees share a ledger in
+the common Git directory. Two simultaneous 10-minute runs reserve 20 run-minutes. Usage
+belongs to the local date the run started. A completed run releases the unused reservation.
+After an interrupted request the ledger holds at least the token reservation because final
+usage may be unavailable. If the supervisor itself dies, the reservation remains for that day.
 
-| Who | Use it for | Model (config) |
-|---|---|---|
-| CTO | the session you talk to: plans, writes cards, reviews, merges | `claude-opus-5-5`, effort `max` (`cto.model`, `cto.effort`) |
-| card `mechanical` | rewording, renames, boilerplate, applying a known pattern | `claude-haiku-4-5-20251001` (`seat_models`) |
-| card `standard` | a component or endpoint with a clear spec | `claude-sonnet-5-5` |
-| card `hard` | reasoning, algorithms, security-critical code: correctness is the deliverable | `claude-opus-5-5` |
-| free-form read-only seat | audits (`seat.py run security-audit "..."`) | `claude-sonnet-5-5` (the spec's `model:`) |
+The supervisor measures elapsed time with a monotonic clock and counts cumulative input and
+output tokens from Codex. Cached input and reasoning output are already included. It stops
+at the first update at or above the token cap. One model response can exceed the threshold
+before Codex reports it. The runner records the observed usage and refuses to commit the card.
+A completed turn without token usage also fails. The caps cover the model session. Project
+setup and acceptance commands have their own execution characteristics.
 
-An audit runs on every change that decides access or spend, so its cost recurs: Sonnet 5.5 by
-default. For one change where a missed bug is expensive, write the audit as a `hard`, read-only
-card instead and it runs on Opus 5.5.
+Use `seat.py spend` to see the day’s usage and reservations and `seat.py report --usage` for
+seat history by date, card, and model. Bare `cto` opens the interactive Codex TUI. Its own
+conversation is outside the supervised budget. Seats it launches still use their budgets.
 
-`card.model` overrides the tier for one card. Verified to resolve through `claude --model` on
-2026-10-04: `claude-haiku-4-5-20251001`, `claude-sonnet-5-5`, `claude-opus-5-5` (and on
-2026-10-02 the older `claude-sonnet-5`, `claude-opus-5`). `claude-fable-5-1` answered "out of
-usage credits" on this account, so it is not used. Confirm an id resolves before putting it in a
-config, and record what you find on the board.
+## Running a delegated card
 
-`claude-haiku-5-5` also resolves (checked 2026-11-11), but on a one-word reply with the same flags
-it cost $0.079 where Haiku 4.5 cost $0.016. One sample each; `mechanical` means the cheapest model
-that can do a rename, so the default stays Haiku 4.5. Measure on your own account before changing it.
+In an interactive CTO session, the CTO writes and checks a card, then requests approval
+for the runner when it needs to create a sibling worktree. For an unattended handoff, run
+`cto --card DOC-2` from the terminal. The launcher reserves the CTO review budget, runs
+the named card on its selected worker, and gives Astra the runner’s verified result.
+A failed or capped card exits with the runner’s status before a review turn starts.
+Headless shell calls use built-in commands and the project’s exact `cto.allow` prefixes.
+A free-form headless CTO can prepare cards but cannot grant itself permission to start a
+process outside its sandbox.
 
-**What a session carries matters more than the model's price.** Everything in context is
-re-sent with every call of a session. Measured 2026-10-05 on the owner's CTO sessions: a ~200k
-token baseline before any work, of which ~100k were the tool definitions of MCP servers inherited
-from the user's setup (used twice in three days) and ~24k the whole `board.json` (77 of 100
-cards closed); a 111-call session re-read 35.7M tokens from cache. So the CTO now starts with no
-MCP servers (`cto.mcp`: `none` by default, `inherit`, or a path to an MCP config file), its brief
-carries only the open board cards (`board.py show <ID>` for one in full), and the guardrails and
-routing docs are read when needed. Replaying the startup on a copy of the pilot project: 138k -> 38k
-tokens of context, $0.48 -> $0.05 (Haiku; the ratio is what carries over).
+## Upgrading a Claude-based project
 
-Skills cost the same way: every skill's description is listed in every call. A project hides what
-it does not need without touching other projects: `"enabledPlugins": {"<plugin>@<marketplace>":
-false}` in its `.claude/settings.json` (project settings outrank user settings; `install.sh` keeps
-the key) and `"skillOverrides": {"<skill>": "user-invocable-only"}` for user-level skills (hidden
-from the model, `/name` still works for the human). On the pilot project, a hosting provider's 28 skill entries
-cost 4,174 tokens per Opus 5.5 call (2026-10-06). Measure on the model that will run: Claude Code
-caps the skill listing for smaller context windows, so on Haiku the same change looked like 460.
+**SUPERSEDED 2026-11-26.** Codex CLI now runs the CTO and the seats. Time and token caps
+replace the former USD settings. There is no price conversion. Existing cards without token
+caps inherit the project default. Past run records remain available and daily reservations
+start with the new ledger.
 
-**Tools cost most of all.** A session is offered 24 built-in tools by default, with a skill listing
-and a subagent listing that exist only for the Skill and Task tools. The CTO used 7 tools in ~400
-calls over six sessions (and TaskStop once), never a skill or a subagent. Naming its working set
-(`cto.tools`, default `Bash,Read,Edit,Write,Glob,Grep,WebFetch,WebSearch,TaskStop`, `"default"` for
-all) cut a one-word Opus 5.5 call from 26,601 to 9,942 tokens (2026-10-06); typed `/commands` still
-work for the human. `--tools` takes a list, so the launcher puts it LAST, after the prompt. Seats
-are offered exactly the tools their allowlist names (`cardrun.card_command`), which halved a card's
-cost floor on Haiku ($0.058 -> $0.026), and the read-only audit seat runs with
-`--strict-mcp-config --tools Read,Glob,Grep,Bash`: it had been inheriting every MCP server of the
-owner's setup, write-capable ones included. `cto.claude_md_excludes` keeps a personal global
-`CLAUDE.md` that says nothing about the codebase out of CTO sessions (2,181 tokens per call for
-the pilot project's owner).
-
-**Route by task value.** A strong model earns its cost on an audit that finds a real
-bug. It does not earn it on rewording three strings. When in doubt, start one tier
-lower and let the acceptance commands tell you: a card that fails its acceptance on
-`mechanical` is a data point, not a failure of the routing.
-
-**Cost is recorded on the card, and capped.** Every card run stores Claude Code's own
-`total_cost_usd` and token counts, in the run log and on the card itself (`runs`, `spent_usd` in
-`.ai-teammates/cards/<ID>.json`). Three limits, each one executed:
-
-- **Per run:** the card's `budget.usd`, which the CTO sets (default $1, `cards.default_usd`). It
-  is passed to Claude Code as `--max-budget-usd`, which stops the run itself; the run then ends
-  `over_budget`, nothing is committed, and the board card says why. `card.py check` refuses a cap
-  above the owner's maximum for one run (`cards.max_usd`, $5 by default). A free-form seat run
-  (an audit) is capped at that maximum.
-- **Per day:** `budget.daily_usd` in `config.json` ($20 by default, `0` for none). The runner
-  does not launch a card that could take the day's card runs over it, and records the ask for
-  the owner. Only the owner can raise it: an agent's edit to `config.json` asks first.
-- **A headless CTO run** (`cto "task"`): `cto.max_usd`, unset by default.
-
-`seat.py report --cost` shows spend per day, card and model; `seat.py spend` is the one line the
-pre-flight puts in the CTO's brief; `seat.py report` sums per seat. On a subscription the dollar
-figures are Claude Code's estimate of what the run would cost: nothing is billed, but it is what
-counts against your plan's limit. Not counted: free-form seat runs and the CTO's own session. The harness's own prompt sets a floor per
-run, measured on a one-word reply on 2026-10-04: Haiku 4.5 $0.058, Sonnet 5.5 $0.082, Opus 5.5
-$0.163. The 5.0 models they replaced were dearer (Sonnet 5 $0.13, Opus 5 $0.21 on 2026-10-02), so
-the move to 5.5 is cheaper as well as newer. A card should be worth its floor: below it, do it
-yourself. Seats bill the same account as your own session, so a long audit also spends your
-session limit (an 8-minute audit ran it out on 2026-10-03).
-
----
-
-## Choosing for a task that does not fit a row
-
-1. **Does it need hooks to fire?** Claude Code. Not negotiable.
-2. **Does it write product code?** A card, in its own worktree, on a `writes: true`
-   seat. Never the main checkout.
-3. **Is it read-only?** A `read_only: true` seat (plan mode cannot write at all).
-   Prefer this for audits: a read-only agent cannot corrupt what it misunderstands.
-4. **Is correctness or cost the binding constraint?** Correctness: `hard`. Cost: `mechanical`.
-
-Then write the choice on the card. A routing decision nobody wrote down gets
-re-litigated every session.
-
----
-
-## Harness gotchas that have cost real time
-
-- **`--allowedTools` is variadic.** A prompt after it is parsed as tool patterns.
-  Put the prompt **first** (the card runner does).
-- **`nohup ... &` is not enough** to survive the launcher: it blocks SIGHUP but does
-  not detach the process group. Use `detach.py` (double-fork through `os.setsid()`).
-  Three runs died silently before this was understood.
-- **macOS has no `timeout`.** Budgets are enforced in Python (`cardrun.supervise`).
-- **`claude -p` warns about stdin** unless it is redirected (`< /dev/null`).
-- **`--output-format stream-json` needs `--verbose`**, and its final `result` event is
-  where the cost, turn count and any `permission_denials` live.
-- **A permission denial does not fire `PostToolUseFailure`.** It surfaces on
-  `PermissionRequest`; a command that runs and fails surfaces on `PostToolUseFailure`.
-  (Measured 2026-10-02; this is why `loopguard.py` listens to both.)
-- **`continue:false` from a failure hook does not stop a run.** A `PermissionRequest`
-  deny with `interrupt:true` does.
-- **Always verify a delegated run's output landed**: the runner computes the diff from
-  git and executes the acceptance commands, but you still re-derive one claim.
-
----
-
-## History: SUPERSEDED 2026-10-02
-
-Until 2026-09-25 the seats ran on Ollama cloud models through OpenCode and Codex.
-Ollama began answering 402 on 2026-09-24, the seats were moved to direct Anthropic
-routes, and OpenCode's Anthropic route was never connected, which left two of three
-code seats unable to run. The measurements are kept because they are real, but they
-describe a setup that is no longer in use, and rankings from one codebase do not
-transfer to another.
-
-- OpenCode ignores the parent process cwd and needs `--dir`, or it writes into the
-  wrong repo (this made early delegated runs look like no-ops). It has no turn cap, no
-  hooks, and an `ask` rule auto-rejects headless.
-- Codex stalled twice on documentation tasks, producing a confident report and no diff.
-- kimi-k3 used ~4x the tokens of glm-5.2 and found three real bugs across three audits;
-  deepseek-v4-pro needed ~280s per hard call; minimax-m3 was the vision option.
-- A routing doc once named `glm-5.3-flash`, which `ollama list` never had. Verify that a
-  model resolves before writing it into a config.
-
-The code for those paths outlived them. It was removed in 2026-11 (#14): the installer's
-`opencode.json` deny-list, the harness choice in `cto setup`, and the launcher's Ollama path.
+Re-run the project installer, review the migrated config, and commit the install as usual.
+Open the main project in Codex, trust the project, and review its registered commands in
+`/hooks` before the first team run. Launches check that the required hooks are enabled and
+trusted. Use `cto setup` to choose limits for this project's workload.

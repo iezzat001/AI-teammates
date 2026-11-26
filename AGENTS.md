@@ -31,7 +31,7 @@ scripts/test.sh                                   # the whole suite in a throwaw
 env -u PYTHONDONTWRITEBYTECODE scripts/test.sh    # as CI runs it, if your shell sets that variable
 ```
 
-It must end with `all guardrails in force`. It runs with a fake `HOME` and a stand-in `claude`, so
+It must end with `all guardrails in force`. It runs with a fake `HOME` and a stand-in `codex`, so
 it needs no account and touches nothing of the owner's. For the dashboard:
 `python3 scripts/dashboard_demo.py` serves an invented project on port 8790.
 
@@ -68,7 +68,7 @@ it needs no account and touches nothing of the owner's. For the dashboard:
 
 | Path | What it is |
 |---|---|
-| `bin/cto` | The launcher: pre-flight, the brief, starting Claude Code |
+| `bin/cto` | The launcher: pre-flight, the brief, starting Codex CLI |
 | `install.sh` | Installs into a project; also `ai-teammates doctor` and `uninstall` |
 | `core/hooks/guard.py` | PreToolUse hook: blocks unsafe tool calls |
 | `core/hooks/prepush.py` | The git pre-push hook |

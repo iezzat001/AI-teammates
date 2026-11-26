@@ -62,23 +62,7 @@ if [ "$MODE" = uninstall ]; then
   # `rm -rf .ai-teammates` (the old instructions) left the hooks registered: a
   # missing script makes python exit 2, which Claude Code's PreToolUse reads as
   # BLOCK - every tool call in the project refused. Unregister first.
-  python3 - "$PROJECT" <<'PY'
-import json, re, sys
-from pathlib import Path
-sp = Path(sys.argv[1]) / ".claude" / "settings.json"
-if sp.exists():
-    s = json.loads(sp.read_text())
-    for event, entries in list(s.get("hooks", {}).items()):
-        for e in entries:
-            e["hooks"] = [h for h in e.get("hooks", [])
-                          if ".ai-teammates/hooks/" not in h.get("command", "")]
-        s["hooks"][event] = [e for e in entries if e["hooks"]]
-        if not s["hooks"][event]:
-            del s["hooks"][event]
-    # keep the file's own last line ending: rewriting it without one was a diff on every run
-    sp.write_text(json.dumps(s, indent=2) + ("\n" if sp.read_text().endswith("\n") else ""))
-    print("  claude  : hooks unregistered")
-PY
+  python3 "$SRC/core/hooks/codex_hooks.py" uninstall "$PROJECT"
   HOOK="$(cd "$PROJECT" && python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import _config; print(_config.hooks_dir())' "$DEST/hooks")/pre-push"
   grep -q "AI-teammates pre-push" "$HOOK" 2>/dev/null && rm "$HOOK" && echo "  git     : pre-push hook removed"
   rm -rf "$DEST" && echo "  removed : .ai-teammates/ (board, facts and config are in git history)"
@@ -90,10 +74,10 @@ echo "── installing AI-teammates into $NAME ──"
 
 # --- required tooling ------------------------------------------------------
 missing=()
-for c in git python3 claude; do command -v "$c" >/dev/null || missing+=("$c"); done
+for c in git python3 "${AI_TEAMMATES_CODEX_BIN:-codex}"; do command -v "$c" >/dev/null || missing+=("$c"); done
 if [ ${#missing[@]} -gt 0 ]; then
   echo "  MISSING (required): ${missing[*]}" >&2
-  echo "  claude → https://claude.com/claude-code" >&2
+  echo "  codex → https://developers.openai.com/codex/cli" >&2
   exit 1
 fi
 for c in node bun uv; do
@@ -139,7 +123,7 @@ echo "  docs    : $(ls "$DEST"/docs/*.md | wc -l | tr -d ' ')"
 FRESH=""
 if [ ! -f "$DEST/config.json" ]; then
   FRESH=1
-  # The CTO runs on Claude Code's own default model until you name one (04-ROUTING).
+  # Default CTO route for a new Codex project.
   #
   # Production is the branch this repository already ships from, not an assumption:
   # a `master` project protected as `main` would protect nothing.
@@ -160,7 +144,7 @@ if [ ! -f "$DEST/config.json" ]; then
   cat > "$DEST/config.json" <<JSON
 {
   "project": "$NAME",
-  "cto": { "model": "default" },
+  "cto": { "model": "gpt-6.2-astra", "effort": "xhigh" },
   "protected_branches": ["$PROD", "development"],
   "guarded_paths": [$GUARDED],
   "delegation": { "cto_product_edits": "block" }
@@ -179,105 +163,8 @@ fi
   "agents": {}, "tasks": [] }
 JSON
 
-# --- register the hooks where the harness actually looks -------------------
-# Our code lives in .ai-teammates/, but Claude Code does not know that: it reads
-# .claude/settings.json. That path is its contract, not our choice. Registering
-# in the wrong place is how a guardrail ends up passing its own self-test while
-# protecting nothing.
-#
-# Until 2026-11 this also wrote an OpenCode deny-list (opencode.json). Seats left
-# OpenCode on 2026-09-25 (docs/04-ROUTING.md, History) and nothing read the file.
-# One that an older install left in a project is the project's now: not touched.
-python3 - "$PROJECT" <<'PY'
-import json, re, sys
-from pathlib import Path
-
-proj = Path(sys.argv[1])
-hooks = ".ai-teammates/hooks"
-# "$CLAUDE_PROJECT_DIR"-anchored: a relative path fails from a subdirectory, and
-# python exits 2 on a missing file - which PreToolUse reads as BLOCK.
-run = 'python3 "$CLAUDE_PROJECT_DIR"/' + hooks
-
-
-def load(p):
-    """Never rewrite a file we could not parse. The old fallback was `{}`, so
-    one JSONC comment wiped the project's whole settings file."""
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text())
-    except Exception as e:
-        sys.exit(f"  ABORT: {p} is not plain JSON ({e}).\n"
-                 f"         Not rewriting it. Fix or back it up, then re-run.")
-
-
-def save(p, obj):
-    """Write JSON keeping the file's own last line ending (new files get one). FOUND 2026-10-28: the
-    rewrite dropped it, so every upgrade showed a one-character diff in .claude/settings.json."""
-    end = "\n" if not p.exists() or p.read_text().endswith("\n") else ""
-    p.write_text(json.dumps(obj, indent=2) + end)
-
-
-# Claude Code — merge, never clobber: the project may have its own hooks.
-sp = proj / ".claude" / "settings.json"
-sp.parent.mkdir(exist_ok=True)
-settings = load(sp)
-# A list, not a dict: loopguard shares PostToolUse and UserPromptSubmit with
-# activity.py. Each (event, command) is registered on its own.
-# PostToolUseFailure and PermissionRequest are where failures and approval
-# denials actually surface (PostToolUse only fires on success) - measured, not
-# assumed: see loopguard.py.
-wanted = [
-    ("PreToolUse",         f"{run}/guard.py"),
-    ("PostToolUse",        f"{run}/activity.py"),
-    ("PostToolUse",        f"{run}/loopguard.py PostToolUse"),
-    ("PostToolUseFailure", f"{run}/loopguard.py PostToolUseFailure"),
-    ("PermissionRequest",  f"{run}/loopguard.py PermissionRequest"),
-    ("UserPromptSubmit",   f"{run}/activity.py"),
-    ("UserPromptSubmit",   f"{run}/loopguard.py UserPromptSubmit"),
-    ("SessionStart",       f"{run}/session_start.py"),
-    ("SessionEnd",         f"{run}/session_end.py"),
-    # memlife: when a CTO turn ends with unreviewed commits on the integration branch, ask once
-    ("Stop",               f"{run}/memlife.py stop-hook"),
-]
-h = settings.setdefault("hooks", {})
-added, replaced = [], []
-for event, cmd in wanted:
-    entries = h.setdefault(event, [])
-    script = cmd.rsplit("/", 1)[-1]          # e.g. guard.py
-
-    # FOUND 2026-09-10: this used to check `if hooks not in flat`, i.e. whether
-    # OUR path was already registered - not whether ANYTHING was already
-    # handling the event. A project with the same scripts wired from an older
-    # directory got both registered, so every guard check and activity log ran
-    # TWICE. The check looked for its own string instead of for the condition,
-    # which is the failure shape this whole system is about.
-    #
-    # Drop only a prior registration of THIS script (an older .claude/hooks or
-    # .ai-teammates/hooks copy), one hook at a time. FOUND 2026-09-19: this
-    # dropped whole entries for anything under .claude/hooks/, deleting the
-    # project's own unrelated hooks - "merge, never clobber" in name only.
-    ours = re.compile(r"(?:\.ai-teammates|\.claude)/hooks/" + re.escape(script) + r"\b")
-    kept = []
-    for e in entries:
-        hs = e.get("hooks", [])
-        keep = [hh for hh in hs
-                if hh.get("command") == cmd or not ours.search(hh.get("command", ""))]
-        if len(keep) != len(hs):
-            replaced.append(event)
-        if keep:
-            e["hooks"] = keep
-            kept.append(e)
-    entries[:] = kept
-
-    if not any(hooks in json.dumps(e) and script in json.dumps(e) for e in entries):
-        entries.append({"hooks": [{"type": "command", "command": cmd}]})
-        added.append(event)
-save(sp, settings)
-print(f"  claude  : hooks registered in .claude/settings.json ({len(added)} added"
-      + (f", {len(replaced)} duplicate(s) removed" if replaced else "") + ")")
-PY
-
+python3 "$DEST/hooks/codex_hooks.py" install "$PROJECT"
+echo "  codex   : hooks registered in .codex/hooks.json; review them in Codex with /hooks"
 # --- git pre-push hook -----------------------------------------------------
 # The branch rules are enforced by git itself, not by pattern-matching commands
 # inside one harness: pre-push is told where each ref really lands, fires in
@@ -325,7 +212,7 @@ esac
 # --- memory ----------------------------------------------------------------
 if [ ! -d "$HOME/.claude-mem" ]; then
   echo
-  echo "  memory  : claude-mem not installed. Sessions will not be remembered."
+  echo "  memory  : claude-mem not installed. Historical Claude memory is unavailable."
   echo "            npx claude-mem install"
 else
   echo "  memory  : claude-mem present"
@@ -345,10 +232,10 @@ fi
 # branch. An uncommitted hook registration protects the checkout you are standing
 # in and nothing else — guardrail_test will (correctly) fail until this is done.
 # Not committed here: `cto setup` offers to, and otherwise it is these two lines.
-uncommitted="$(git -C "$PROJECT" status --porcelain -- .ai-teammates .claude/settings.json .gitignore 2>/dev/null | wc -l | tr -d ' ')"
+uncommitted="$(git -C "$PROJECT" status --porcelain -- .ai-teammates .codex/hooks.json .claude/settings.json .gitignore 2>/dev/null | wc -l | tr -d ' ')"
 if [ "$uncommitted" != "0" ]; then
   # only paths that exist: `git add` refuses the whole command over one missing pathspec
-  paths=""; for f in .ai-teammates .claude/settings.json .gitignore; do
+  paths=""; for f in .ai-teammates .codex/hooks.json .claude/settings.json .gitignore; do
     [ -e "$PROJECT/$f" ] && paths="$paths $f"
   done
   echo "  NOT COMMITTED YET — until it is, new worktrees start unguarded. \`cto setup\` offers to, or:"

@@ -54,7 +54,7 @@ spend            what card runs cost today, against the daily budget
 ```
 
 The self-test is due when the installed hooks, the launcher, `config.json`, a seat spec, the
-hook registration or the versions of python, git or claude changed since it last **passed**, or
+hook registration or the versions of python, git or codex changed since it last **passed**, or
 that was more than 7 days ago. A failed self-test is never recorded as passed. Until 2026-11 the
 whole suite ran at every start (measured: about 120 seconds). `cto --selftest` runs it now.
 

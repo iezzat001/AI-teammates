@@ -66,8 +66,8 @@ def build():
         shutil.rmtree(ROOT)
     (HOME / "bin").mkdir(parents=True)
     (ROOT / ".ai-teammates-demo").write_text("made by scripts/dashboard_demo.py\n")
-    # install.sh wants `claude` on PATH; the demo never runs a model
-    stub = HOME / "bin" / "claude"
+    # install.sh wants `codex` on PATH; the demo never runs a model
+    stub = HOME / "bin" / "codex"
     stub.write_text("#!/bin/sh\n[ \"$1\" = auth ] && echo '{\"loggedIn\": true}'\nexit 0\n")
     stub.chmod(0o755)
 
@@ -90,7 +90,7 @@ def build():
     ai = PROJ / ".ai-teammates"
     cfg = json.loads((ai / "config.json").read_text())
     cfg.update(owner="You", project="acme-notes")
-    cfg["cto"].update(model="claude-opus-5-5", effort="max")       # the setup docs/04-ROUTING recommends
+    cfg["cto"].update(model="gpt-6.2-astra", effort="xhigh")       # the setup docs/04-ROUTING recommends
     (ai / "config.json").write_text(json.dumps(cfg, indent=2) + "\n")
     (ai / "RULES.md").write_text(
         "Deploys\n"
@@ -191,9 +191,9 @@ def build():
     events = sorted(day + events, key=lambda e: e["ts"])
     (state / "events.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
     runs = [{"ts": iso(44), "agent": "ui-developer", "seat": "UI Developer", "exit": 0, "tool_calls": 23,
-             "card": "UI-7", "status": "done", "seconds": 41, "cost_usd": 0.031},
+             "card": "UI-7", "status": "done", "seconds": 41, "tokens": {"in": 6000, "out": 400}},
             {"ts": iso(9000), "agent": "backend", "seat": "Backend", "exit": 0, "tool_calls": 18, "card": "API-2",
-             "status": "done", "seconds": 64, "cost_usd": 0.044},
+             "status": "done", "seconds": 64, "tokens": {"in": 7850, "out": 600}},
             {"ts": iso(12), "agent": "security-audit", "seat": "Security Audit", "exit": 0, "tool_calls": 31,
              "status": "done", "seconds": 212}]
     (state / "agent_runs.jsonl").write_text("".join(json.dumps(r) + "\n" for r in runs))

@@ -21,7 +21,7 @@ differently. The guardrails are built to catch that agent, and to make its mista
 
 - product code committed straight to a protected branch, or pushed there (git pre-push hook)
 - product code edited in a checkout on a protected branch (judged by the checkout the file is in)
-- the guardrails being changed without you: the hooks, Claude Code's settings and `config.json`
+- the guardrails being changed without you: the hooks, Codex project settings and `config.json`
   (card limits, protected branches, product paths, denied commands) ask you first, whether
   edited directly or through the shell
 - a teammate editing files outside its task card (checked live by a hook, and again from

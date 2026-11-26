@@ -10,24 +10,25 @@ cd ../your-project-dev && cto                     # start talking
 
 `install.sh` writes `.ai-teammates/` into your project (hooks, agent specs,
 docs, config, board) and puts `cto` and `ai-teammates` on your PATH. Outside
-`.ai-teammates/` it also: registers its hooks in `.claude/settings.json`
+`.ai-teammates/` it also: registers its hooks in `.codex/hooks.json`
 (merging, never replacing yours) and installs a git `pre-push` hook (never over one
 it did not write). Runtime state
 lives in `.git/ai-teammates/`, shared by every worktree and never committed.
 
-The hooks run in every Claude Code session opened in the project, not only the CTO's: the
+Review the project hooks in Codex with `/hooks`. Trusted hooks run in each Codex CLI session opened in the project, not only the CTO's: the
 guard and the push rules apply to all of them, while the session-end commit of the board and
 cards happens only in a session started by `cto` (`session.auto_commit` in `config.json`: `cto`,
 `all` or `off`). The README has the table.
 
-Re-running upgrades hooks, docs and `cto.md`. It never touches your config,
-board, `RULES.md`, or seat specs you already have, and does not bring back a seat you dropped.
+Re-running updates framework hooks, docs and CTO instructions. On a Claude installation it also
+migrates runtime fields on existing seat specs, model defaults, budget settings and hook
+registrations. Review the changes before committing them.
 
-`cto setup` asks the questions the installer does not: how Claude Code is paid for (it also
+`cto setup` asks the questions the installer does not: how Codex CLI is paid for (it also
 checks that it is installed and signed in), which memory (claude-mem, MemPalace or both, scoped
 to this project), the CTO's model and effort, which seats to keep and on which model, the model
 per card tier, the branches, what counts as product code, the delegation policy, the integration
-checks, and what card runs may cost. Then it sets up the workspace: it offers to remove branches
+checks, and the daily and per-card time and token limits. Then it sets up the workspace: it offers to remove branches
 that are fully merged and worktrees that are stale or idle (only on a yes, each branch tagged
 `archive/...` first; nothing unmerged, dirty or remote is touched), commits the install, and
 creates the integration branch with its checkout at `../<project>-dev`.
@@ -45,15 +46,15 @@ the hooks, the config or the tools changed) runs the whole suite, about two minu
 ```
 ── pre-flight ──────────────────────────
   no seat running
-  STATIC — is each seat bound by the thing its harness actually reads?
-  ok    ui-developer: card seat — acceptEdits + prompts denied + allowlist + isolated ...
+  STATIC — Codex seats and hook registration
+  ok    ui-developer: Codex role
   SELF-TEST — it has not passed here yet: running it now ...
   PREPUSH — does it still block product code on main?
   ok    prepush.py BLOCKED a product commit on main (executed, not grepped)
   all guardrails in force
 ── git ─────────────────────────────────
   on development · 0 dirty · 2 worktrees
-  spend: today $0.00 of $20.00 in 0 card run(s) · last 7 days $0.00
+  usage today: 0 of 2000000 tokens, 0.0 of 240 minutes (includes reservations)
 ```
 
 Every later start runs only the checks about this project (under a second) and says so:
@@ -92,7 +93,7 @@ anything that spends money.
 {
   "protected_branches": ["main", "development"],
   "guarded_paths": ["src/", "lib/", "app/"],
-  "cto": { "provider": "anthropic", "model": "claude-opus-5-5", "effort": "max" }
+  "cto": { "model": "gpt-6.2-astra", "effort": "xhigh" }
 }
 ```
 
@@ -102,10 +103,9 @@ too broad and every doc edit needs a feature branch, which trains everyone to
 override the guardrail — and an ignored guardrail is worse than none.
 
 `install.sh` fills `protected_branches` from the branch your repository ships from and
-`guarded_paths` from the source folders it finds; check both. The CTO runs on Claude Code's
-default model until you name one; see [04-ROUTING](04-ROUTING.md) for the measured choice.
-Verify a model id resolves before you configure it (`claude --model <id> -p hi`). Our own
-routing doc once named a model that had never existed, for weeks.
+`guarded_paths` from the source folders it finds; check both. The default CTO uses GPT-6.2-Astra with extra-high reasoning. Verify the installed
+CLI’s model and effort with `python3 .ai-teammates/hooks/seat.py route cto --verify`.
+[Routing](04-ROUTING.md)
 
 **`integration_checks`** (optional): project commands, such as `["npm run typecheck", "npm test"]`,
 that `seat.py land` runs on the merged result every time a card lands. Two cards can each pass
@@ -119,10 +119,8 @@ blocks the promotion and says so.
 
 **`memory.mempalace_bin`** (optional): the path of the `mempalace` command when it is not on `PATH`.
 
-**`budget`** (optional): `{"daily_usd": 20}` is what all card runs together may cost in one day
-(`0` = no daily budget). One run is bounded by its card's `budget.usd`; the default and the most a
-card may ask for are `cards.default_usd` (1) and `cards.max_usd` (5). `cto.max_usd` caps a headless
-`cto "task"`. See [04-ROUTING](04-ROUTING.md).
+Project daily limits default to `{"daily_tokens": 2000000, "daily_minutes": 240}` in
+`budget`. Cards default to 100,000 tokens and 15 minutes. See the [per-run limits and accounting rules](04-ROUTING.md#time-and-token-budgets).
 
 **`delegation`**: `{"cto_product_edits": "block" | "ask" | "allow"}` decides what happens when the
 CTO itself edits product code, in any checkout: `block` (the default, also when the key is absent:
@@ -146,8 +144,8 @@ product code reached the integration branch through cards and how much the CTO w
 ai-teammates uninstall
 ```
 
-Unregisters the Claude Code hooks, removes the pre-push hook, deletes
+Unregisters the Codex CLI hooks, removes the pre-push hook, deletes
 `.ai-teammates/`. Do **not** just `rm -rf .ai-teammates`: the hooks stay
-registered, python exits 2 on the missing script, and Claude Code reads that as
+registered, python exits 2 on the missing script, and Codex CLI reads that as
 *block* — every tool call in the project refused. `cto` stays on your PATH
 because other projects use it.

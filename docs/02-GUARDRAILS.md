@@ -1,9 +1,8 @@
 # Guardrails
 
-**SUPERSEDED 2026-11-26.** Codex CLI also provides pre-tool hooks. The guard understands
-native `apply_patch` input and checks all files in a patch, including both paths of a rename.
-It refuses patches whose paths it cannot determine. The current installer registers Claude
-Code hooks. See the [Codex cutover status](04-ROUTING.md#codex-cli-migration).
+**SUPERSEDED 2026-11-26.** The installer registers native Codex hooks. The pre-tool guard
+checks every path in a patch, including both paths of a rename. Requests for owner review
+block the operation until the owner acts. [Routing and setup](04-ROUTING.md)
 
 Every rule here exists because something broke. The incident is named so you can
 judge whether the rule applies to your project — and delete it if it does not.
@@ -187,7 +186,7 @@ write through it is refused.
 | `guardrail_test.py --preflight` | Every CTO session start | This project is guarded right now: hooks registered, committed on the production branch, the same in every worktree, signed in |
 | `guardrail_test.py` (the self-test) | At a CTO start when the hooks, launcher, config, seat specs, hook registration or tool versions changed since it last passed, or after 7 days; `cto --selftest`; CI | Every guard, the card runner, setup and memory do what they say — by **executing** them in throwaway repositories (`prepush` blocks a real commit) |
 | `prepush.py` | Every push (git pre-push hook) | No unreviewed product code on a protected branch; production only via integration; a push onto production carrying commits that decide access or spend needs a filed independent review (`review.py`), however the push is spelled, and is blocked if the check cannot run |
-| `guard.py` | Claude Code `PreToolUse` | Product files are not edited in a checkout on a protected branch, judged by the checkout the file is in; changing a guardrail (the hooks, `.claude/settings*.json`, `config.json`) asks the owner, by edit or by shell; a card seat edits only its card's files and writes nothing through the shell; no seat runs `required_denies`; the CTO's own product-code edits are blocked unless `config.json` `delegation` says `ask` or `allow`; nothing changes the AI-teammates source itself |
+| `guard.py` | Codex CLI `PreToolUse` | Product files are not edited in a checkout on a protected branch, judged by the checkout the file is in; changing a guardrail (the hooks, `.claude/settings*.json`, `config.json`) asks the owner, by edit or by shell; a card seat edits only its card's files and writes nothing through the shell; no seat runs `required_denies`; the CTO's own product-code edits are blocked unless `config.json` `delegation` says `ask` or `allow`; nothing changes the AI-teammates source itself |
 | `seat_status.py` | Before launching a seat | Nothing is already running — from the **process table** |
 | `check_build_env.py` | Before every deploy | Config is actually baked into the **built bundle** |
 

@@ -10,7 +10,7 @@ You type `cto` inside your project and describe work in plain language. The CTO 
 whether to do it itself or hand it to a teammate as a small, checkable task card. It
 reviews what comes back and tells you what it verified and what it only assumes.
 
-Built on [Claude Code](https://claude.com/claude-code). Works with any git project.
+Built on [Codex CLI](https://developers.openai.com/codex/cli/). Works with any git project.
 
 > **Status: early.** Extracted from one production project and in use on a second.
 > Don't point it at anything you can't afford to have an agent break. See
@@ -22,9 +22,9 @@ Built on [Claude Code](https://claude.com/claude-code). Works with any git proje
 
 | | |
 |---|---|
-| **`cto`** | An interactive Claude Code session that runs safety checks before you type. |
-| **Teammates** | UI, backend and security-audit agents. Each runs one task card in its own git worktree, with a time, tool and cost budget. |
-| **Guardrails** | Git and Claude Code hooks: no unreviewed product code on your main branches, teammates edit only the files their card names, and an agent that keeps hitting the same wall stops and asks you. |
+| **`cto`** | An interactive Codex CLI session that runs safety checks before you type. |
+| **Teammates** | UI, backend and security-audit agents. Each runs one task card in its own git worktree, with time, token and tool-call limits. |
+| **Guardrails** | Git and Codex CLI hooks: no unreviewed product code on your main branches, teammates edit only the files their card names, and an agent that keeps hitting the same wall stops and asks you. |
 | **Proof, not promises** | A card is "done" only when its acceptance commands pass. The runner executes them; the agent's own report doesn't count. |
 | **A dashboard** | A local page with the board, branches, team, rules and every guard block, live from your repository. |
 
@@ -34,12 +34,12 @@ Built on [Claude Code](https://claude.com/claude-code). Works with any git proje
 
 ```mermaid
 flowchart TB
-    you(["You"]) -->|"plain language"| cto["<b>CTO</b><br/>your Claude Code session<br/>(safety checks run first)"]
+    you(["You"]) -->|"plain language"| cto["<b>CTO</b><br/>your Codex CLI session<br/>(safety checks run first)"]
     cto -->|"writes"| card["<b>Task card</b><br/>one goal, the files it may change,<br/>steps, acceptance commands"]
     card --> runner{{"<b>Runner</b><br/>seat.py run --card"}}
-    runner -->|"new worktree and branch,<br/>time and tool budget"| seat["<b>Teammate</b><br/>a separate Claude Code process<br/>with its own permissions"]
+    runner -->|"new worktree and branch,<br/>time and token caps"| seat["<b>Teammate</b><br/>a separate Codex CLI process<br/>with its own permissions"]
     seat -->|"edits files: hooks allow<br/>only the card's files"| runner
-    runner -->|"checked facts: diff in scope, acceptance passed,<br/>cost, a commit on the branch"| cto
+    runner -->|"checked facts: diff in scope, acceptance passed,<br/>usage, a commit on the branch"| cto
     cto -->|"re-checks one claim, merges"| dev[("development")]
     dev -->|"promotion: pre-push hook<br/>and independent review"| main[("main")]
 ```
@@ -60,42 +60,12 @@ for the nine recurring ways agent work went wrong, and how each one is now caugh
 
 ---
 
-## How is this different from Claude Code's subagents?
+## How delegation works
 
-Claude Code's [subagents](https://code.claude.com/docs/en/sub-agents) are great for work inside your
-session: research, a review, a focused change you will look at yourself. A teammate here is built
-for changes to your product that must be **proven and reviewed before they land**.
-
-```mermaid
-flowchart LR
-    subgraph A["Claude Code subagent"]
-        direction TB
-        a1["Your session"] -->|"a prompt"| a2["Subagent<br/>runs inside your session,<br/>under its permission rules"]
-        a2 -->|"a summary of what it did"| a1
-    end
-    subgraph B["AI-teammates teammate"]
-        direction TB
-        b1["CTO session"] -->|"a task card"| b2{{"Runner"}}
-        b2 -->|"starts it, budgets it,<br/>can stop it"| b3["Teammate<br/>own process, own worktree,<br/>own permission set"]
-        b3 -->|"changed files"| b2
-        b2 -->|"checked facts and<br/>a commit on a branch"| b1
-    end
-    A ~~~ B
-```
-
-| | Claude Code subagent | AI-teammates teammate |
-|---|---|---|
-| **It is given** | a prompt | a task card: one goal, the files it may change, steps, acceptance commands (refused if too big) |
-| **It runs** | inside your session, with your session's permission rules | as a separate `claude -p` process with its own allowlist, prompts denied, and none of your plugins or MCP servers |
-| **It may change** | whatever its tools and your permissions allow | only the card's files: refused live by a hook, checked again from the git diff |
-| **Where** | your checkout, or an optional temporary worktree | always its own worktree and branch, cut from `development` |
-| **"Done" means** | its summary says so | the runner executed the acceptance commands and they passed |
-| **Limits** | a turn limit (`maxTurns`) | wall time, tool calls and idle time; the process is stopped past them |
-| **Blocked on you** | asks through your session's permission prompts | stops, records `BLOCKED: <what it needs>`, and the next `cto` session starts with it |
-| **Record** | the session transcript | every run: status, files, acceptance results, cost; its board card moves |
-| **Reaches `main`** | however you commit it | only by merge through `development`, past the pre-push hook |
-
----
+The CTO creates a task card with a model tier, a file scope, executable acceptance checks,
+and a budget. Each teammate gets a fresh Codex thread. A writer uses a separate Git worktree,
+and a read-only audit uses a read-only sandbox. The runner checks the diff, runs acceptance,
+and records the model, elapsed time and tokens. The CTO reviews the result before landing it.
 
 ## The dashboard
 
@@ -111,7 +81,7 @@ python3 .ai-teammates/hooks/dashboard_server.py     # then open http://127.0.0.1
 | Tab | What it shows |
 |---|---|
 | **Overview** | One screen: open cards and what's in flight, who holds the work (and how much is delegated to seats), what the guards refused, the current branch, whether memory is capturing, what waits for your review, activity over the day, each teammate's activity, and unmerged branches. |
-| **Board** | Every task card by column, with the facts of its last run: files, acceptance results, time, cost, branch. |
+| **Board** | Every task card by column, with the facts of its last run: files, acceptance results, time, tokens, branch. |
 | **Branches** | Worktrees and branches, what each has that `main` doesn't, and where you are. Computed per request, never cached. |
 | **Team** | You, the CTO and each teammate: model, where it runs, its last run, its open cards. |
 | **Rules & Guardrails** | The branch flow the hooks enforce and the team, generated from your config, plus your own `RULES.md`. |
@@ -130,7 +100,7 @@ files, and whether memory capture is actually working.
 ![Branches tab: three worktrees with "you are here" on development, and five branches with unmerged counts](docs/images/dashboard-git.png)
 
 **Team**
-![Team tab: the owner, the CTO on Opus 5.5, and three teammates with their models and last runs](docs/images/dashboard-team.png)
+![Team tab: the owner, the CTO and its configured model, and three teammates with their models and last runs](docs/images/dashboard-team.png)
 
 **Rules & Guardrails**
 ![Rules tab: the enforced branch flow, the team, and the project's own deploy and data rules](docs/images/dashboard-rules.png)
@@ -149,7 +119,7 @@ installing anything into a real project: `python3 scripts/dashboard_demo.py`.
 
 | Tool | Version | Needed for |
 |---|---|---|
-| [Claude Code](https://claude.com/claude-code) (`claude`), signed in | recent | everything |
+| [Codex CLI](https://developers.openai.com/codex/cli/) (`codex`), signed in | recent | everything |
 | `git` | 2.25 or newer | worktrees |
 | `python3` | 3.9 or newer, standard library only | the hooks |
 | [claude-mem](https://github.com/thedotmack/claude-mem) | optional | remembering past sessions |
@@ -179,16 +149,14 @@ From a terminal it goes straight on into the setup.
 
 **3. Answer the setup's questions** (`cto setup`; each default is what it detected):
 
-- **Tool and plan:** it checks that Claude Code is installed and signed in, and asks whether you
-  use a subscription or API billing (so reports can say whether a cost is an estimate or money).
-- **Memory:** claude-mem, MemPalace, or both (the default), scoped to this project. It prints the
-  install command of any that is missing.
-- **Team:** the CTO's model and effort, which seats to keep, each seat's model, and the model per
-  card tier. `--verify-models` makes one short call per model before anything is written.
+- **Codex CLI** checks sign-in. Set `AI_TEAMMATES_CODEX_BIN` when the desired executable is outside PATH.
+- **Memory** defaults to MemPalace. Existing claude-mem data is available as an optional source.
+- **Team** selects the CTO model and effort, seats, and worker tiers. `--verify-models` checks the selected CLI’s catalog.
+
 - **Scope:** the production and integration branches, what counts as product code, whether the CTO
   may edit product code itself (`block` by default, `ask` or `allow`), and the checks run on every
   landed card.
-- **Spend:** the daily budget for card runs and what one card run may cost by default.
+- **Budget** sets default time and token caps per card and shared daily limits.
 - **Workspace:** it lists branches that are fully merged and worktrees that are stale or idle, and
   removes them only if you say yes (every deleted branch is tagged `archive/...` first, so it can
   be restored; unmerged branches, worktrees with uncommitted files and the remote are never
@@ -230,22 +198,25 @@ The CTO delegates through task cards. You rarely run these yourself, but this is
 python3 .ai-teammates/hooks/card.py new UI-1 --seat ui-developer --tier mechanical --title "..." --goal "..."
 python3 .ai-teammates/hooks/card.py check UI-1        # too big? it tells you to split it
 python3 .ai-teammates/hooks/seat.py run --card UI-1   # runs, checks scope, executes acceptance, commits
-python3 .ai-teammates/hooks/seat.py report --cost     # what card runs cost: per day, card and model
+python3 .ai-teammates/hooks/seat.py report --usage    # tokens and run-minutes by day, card and model
 ```
 
-Every card has a cost cap (`budget.usd`) that Claude Code enforces during the run, and the
-project has a daily budget (`budget.daily_usd` in `config.json`, $20 by default). Each run's cost
-is written on its card.
+For an unattended handoff, `cto --card UI-1` runs the named worker and gives its verified result to the CTO for review.
+
+Cards default to 15 minutes and 100,000 tokens. All supervised runs share 240 run-minutes
+and 2 million tokens per project per local day. A response can exceed its cap before Codex
+reports usage. The runner records the overage and stops the card before committing.
+[Model routing and budgets](docs/04-ROUTING.md)
 
 ---
 
 ## What it changes in your project
 
-Installing registers hooks in the project's `.claude/settings.json`. Claude Code reads that file
-for **every** session opened in the project, so the hooks also run when you, or a contributor,
-use Claude Code there without `cto`:
+Installing registers project hooks in `.codex/hooks.json`. Open the main project in Codex
+and review the commands in `/hooks`. Codex loads trusted hooks in sessions in this project
+and its linked worktrees. The team launcher checks hook trust before starting a run.
 
-| Hook | In any Claude Code session in the project |
+| Hook | In any Codex CLI session in the project |
 |---|---|
 | `guard.py` (before each tool call) | Product files cannot be edited in a checkout on a protected branch; changing the guardrails themselves asks you first. The delegation rule and the seat rules apply only to the CTO and to seats. |
 | `session_start.py` | Prints the standing rules (branches, seats) and anything waiting on you. |
@@ -267,7 +238,7 @@ in from your repository and `cto setup` asks about the rest; check it before rea
 {
   "protected_branches": ["main", "development"],
   "guarded_paths": ["src/", "app/"],
-  "cto": { "provider": "anthropic", "model": "claude-opus-5-5", "effort": "max" }
+  "cto": { "model": "gpt-6.2-astra", "effort": "xhigh" }
 }
 ```
 
@@ -275,7 +246,7 @@ in from your repository and `cto setup` asks about the rest; check it before rea
 |---|---|
 | `protected_branches` | `[production, integration]`. Nothing is committed directly to these; they move only by merge. |
 | `guarded_paths` | What counts as product code. Changes there must arrive through a feature branch. **Get this one right:** too narrow lets unreviewed code through; too broad makes every doc edit a ceremony. |
-| `cto.model` | `default` uses Claude Code's default model. [04-ROUTING](docs/04-ROUTING.md) explains the measured choice per role. |
+| `cto.model` | The default is `gpt-6.2-astra` with `xhigh` reasoning. [04-ROUTING](docs/04-ROUTING.md) explains the measured choice per role. |
 
 Project rules the CTO must always follow go in `.ai-teammates/RULES.md` (the installer never
 overwrites it). All other keys are described in the docs below.
@@ -290,7 +261,7 @@ overwrites it). All other keys are described in the docs below.
 | [01 Workflow](docs/01-WORKFLOW.md) | Branches, worktrees, the board, the dashboard |
 | [02 Guardrails](docs/02-GUARDRAILS.md) | Every rule and the incident that created it |
 | [03 Team](docs/03-TEAM.md) | The teammates, and how to add one |
-| [04 Routing](docs/04-ROUTING.md) | Which model does which job, and what it costs |
+| [04 Routing](docs/04-ROUTING.md) | Model tiers and time and token limits |
 | [05 CTO](docs/05-CTO.md) | The CTO's job, powers and review protocol |
 | [06 Memory](docs/06-MEMORY.md) | How memory is captured and kept true |
 | [07 Failure catalogue](docs/07-FAILURE-CATALOGUE.md) | The nine recurring failure shapes |
@@ -304,7 +275,7 @@ overwrites it). All other keys are described in the docs below.
 ai-teammates uninstall
 ```
 
-Don't just delete `.ai-teammates/`: the hooks stay registered, and Claude Code then refuses
+Don't just delete `.ai-teammates/`: the hooks stay registered, and Codex CLI then refuses
 every tool call in the project.
 
 ---

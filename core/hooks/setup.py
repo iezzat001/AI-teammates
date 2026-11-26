@@ -11,14 +11,14 @@ WHY: install.sh asks nothing. Memory was configured by no step at all, so `memsl
 refused (scoping is mandatory) and a new owner learned that only when the CTO first tried; the
 seats' models sat in four spec files nobody was told to open. This is the one place to choose.
 
-It asks, in this order: the tool and plan (Claude Code, how it is paid for), memory, the team,
+It asks, in this order: the Codex CLI and sign-in, memory, the team,
 the scope, what may be spent; then it writes config.json and sets up the workspace: it offers to
 clean up merged branches and stale worktrees, commits the install, and creates the integration
 branch and its checkout, which `cto` needs to start (issue #18: all of that was done by hand).
 
 Answers file (every key optional):
     {"billing": "subscription" | "api", "cto_effort": "default" | "low" | "medium" | "high" | "xhigh" | "max",
-     "daily_usd": 20, "card_usd": 1,
+     "daily_minutes": 240, "daily_tokens": 2000000, "card_minutes": 15, "card_tokens": 100000,
      "workspace": {"commit_install": true, "create_integration": true,        (the defaults)
                    "prune_worktrees": false, "remove_merged_worktrees": false, "delete_merged_branches": false},
          (nothing is ever deleted unless one of the last three is true: --yes does not make them true)
@@ -35,6 +35,8 @@ Answers file (every key optional):
 The owner's, never an agent's: it rewrites config.json and the seat specs, which the guard
 otherwise asks the owner about. So it refuses to run inside an agent session.
 """
+import math
+import codex_runtime
 import json
 import os
 import re
@@ -53,7 +55,7 @@ AGENTS = AI / "agents"
 MEMORIES = ("both", "claude-mem", "mempalace", "none")
 BILLING = ("subscription", "api")
 EFFORTS = ("default", "low", "medium", "high", "xhigh", "max")
-HARNESS = "claude-code"     # the only one: hooks, which stop a seat during a run, fire nowhere else
+HARNESS = "codex"
 
 
 class Asker:
@@ -103,13 +105,13 @@ def as_number(got, low: float, high: float = None):
         v = float(got)
     except (TypeError, ValueError):
         return None
-    if isinstance(got, bool) or v != v or v < low or (high is not None and v > high):
+    if isinstance(got, bool) or not math.isfinite(v) or v < low or (high is not None and v > high):
         return None
     return v
 
 
 def number(ask, key: str, prompt: str, default: float, low: float, high: float = None) -> float:
-    """A dollar amount: from the answers (checked by bad_answers before anything is written), or
+    """A numeric limit from the answers (checked by bad_answers before anything is written), or
     asked until it is one. A budget typed wrong must not silently become the default."""
     while True:
         v = as_number(ask(key, prompt, f"{default:g}"), low, high)
@@ -124,70 +126,65 @@ def bad_answers(answers: dict) -> str:
     """Why an answer about the plan or the spend cannot be right, or "". Checked before anything
     is written: setup changes seat specs as it goes, and "nothing was changed" has to be true."""
     import card as cardmod
-    top = cardmod.limits()["max_usd"]
+    limits = cardmod.limits()
     for key, choices in (("billing", BILLING), ("cto_effort", EFFORTS)):
         if key in answers and answers[key] not in choices:
-            return f"  setup: {key} = {answers[key]!r} is not one of {', '.join(choices)}; nothing was changed"
-    if "daily_usd" in answers and as_number(answers["daily_usd"], 0) is None:
-        return (f"  setup: daily_usd = {answers['daily_usd']!r} must be a number of 0 or more "
-                f"(dollars a day for all card runs; 0 = no daily budget); nothing was changed")
-    if "card_usd" in answers and as_number(answers["card_usd"], 0.01, top) is None:
-        return (f"  setup: card_usd = {answers['card_usd']!r} must be a number from 0.01 to {top:g}: the most one "
-                f"card run may cost is cards.max_usd in config.json; nothing was changed")
+            return f"setup: {key} must be one of {choices}"
+    for key, low, top in (("daily_tokens", 0, None), ("daily_minutes", 0, None),
+                          ("card_tokens", 1, limits["max_tokens"]), ("card_minutes", 0.01, limits["max_minutes"])):
+        if key in answers:
+            val = as_number(answers[key], low, top)
+            if val is None or ("tokens" in key and not val.is_integer()):
+                return f"setup: {key} must be a valid number within its limits"
     return ""
 
 
 # --- tools and plan ------------------------------------------------------------------------
 
 def step_tools(ask, cfg: dict) -> list:
-    """Which coding tool runs the team, and how it is paid for. One tool: Claude Code, because
-    its hooks are the guards (docs/04-ROUTING.md). What is left to say is whether it is there and
-    signed in, and whether a dollar figure in a report is money or an estimate."""
+    """Check CLI sign-in and preserve the project account preference."""
     print("\n── tools and plan ── what runs the CTO and the seats (docs/04-ROUTING.md)")
-    claude = os.environ.get("AI_TEAMMATES_CLAUDE_BIN", "claude")
+    cli = codex_runtime.executable()
     todo = []
-    print("  coding tool   Claude Code (the only one supported: its hooks are what stop a seat during a run)")
-    if not shutil.which(claude):
-        print("  claude        NOT installed")
-        todo.append("install Claude Code: https://claude.com/claude-code")
-    else:
-        try:
-            out = subprocess.run([claude, "auth", "status"], capture_output=True, text=True, timeout=30).stdout
-            signed = bool(json.loads(out).get("loggedIn"))
-        except Exception:
-            signed = False
-        print(f"  claude        {'signed in' if signed else 'NOT signed in'}")
-        if not signed:
-            todo.append("claude auth login")
+    print("  coding tool   Codex CLI")
+    try:
+        signed = subprocess.run([cli, "login", "status"], capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        signed = False
+    print("  codex         " + ("signed in" if signed else "NOT signed in"))
+    if not signed:
+        todo.append("install Codex CLI and run codex login")
     cto = dict(cfg.get("cto") or {})
-    cto["billing"] = ask("billing", "How Claude Code is paid for here: a subscription (Pro, Max, Team) or API billing",
+    cto["billing"] = ask("billing", "How Codex is paid for here (subscription or API billing)",
                          cto.get("billing") if cto.get("billing") in BILLING else "subscription", BILLING)
-    print("                " + ("costs in reports are Claude Code's estimates: nothing is billed, but they are "
-                                "what counts against your plan's limit" if cto["billing"] == "subscription"
-                                else "costs in reports are money billed to your API account"))
     cfg["cto"] = cto
     return todo
 
 
 def step_spend(ask, cfg: dict) -> None:
     import card as cardmod
-    print("\n── spend ── what card runs may cost (docs/04-ROUTING.md)")
-    top = cardmod.limits()["max_usd"]
-    daily = number(ask, "daily_usd", "Daily budget for all card runs together, in dollars (0 = none)",
-                   _config.daily_budget(), 0)
-    cfg["budget"] = {**(cfg.get("budget") or {}), "daily_usd": daily}
-    cap = number(ask, "card_usd", f"What one card run may cost when the card does not say, in dollars (at most {top:g})",
-                 cardmod.limits()["default_usd"], 0.01, top)
-    cards = dict(cfg.get("cards") or {})
-    # only when it differs from the built-in default, so an upgrade's newer default still reaches this project
-    if cap != cardmod.LIMITS["default_usd"]:
-        cards["default_usd"] = cap
-    else:
-        cards.pop("default_usd", None)
-    if cards:
-        cfg["cards"] = cards
-    else:
-        cfg.pop("cards", None)
+    import run_budget
+    token_cap, minute_cap = run_budget.caps()
+    limits = cardmod.limits()
+    print("\n── budgets ── time and cumulative input plus output tokens")
+    def ask_limit(key, label, default, low, top=None):
+        while True:
+            val = number(ask, key, label, default, low, top)
+            if "tokens" not in key:
+                return val
+            if val.is_integer():
+                return int(val)
+            print("  tokens must be a whole number")
+    daily = cfg.setdefault("budget", {})
+    daily["daily_tokens"] = ask_limit("daily_tokens", "Tokens per day (0 = unlimited)", token_cap, 0)
+    daily["daily_minutes"] = ask_limit("daily_minutes", "Run-minutes per day (0 = unlimited)", minute_cap, 0)
+    for key, low in (("tokens", 1), ("minutes", 0.01)):
+        default = "default_" + key
+        value = ask_limit("card_" + key, f"Default {key} per card", limits[default], low, limits["max_" + key])
+        if value != cardmod.LIMITS[default]:
+            cfg.setdefault("cards", {})[default] = value
+        elif "cards" in cfg:
+            cfg["cards"].pop(default, None)
 
 
 # --- memory --------------------------------------------------------------------------------
@@ -216,7 +213,7 @@ def step_memory(ask, cfg: dict, project: str) -> list:
     for k, v in have.items():
         print(f"  {k:<11} {'installed' if v else 'not installed'}")
     now = ("both" if mem.get("mempalace_wing") and mem.get("claude_mem_projects") else "mempalace"
-           if mem.get("mempalace_wing") else "claude-mem" if mem.get("claude_mem_projects") else "both")
+           if mem.get("mempalace_wing") else "claude-mem" if mem.get("claude_mem_projects") else "mempalace")
     choice = ask("memory", "Memory systems", now, MEMORIES)
     for k in ("default", "mempalace_wing", "claude_mem_projects"):
         mem.pop(k, None)
@@ -262,9 +259,9 @@ def step_team(ask, cfg: dict) -> tuple:
     import seat
     print("\n── team ── the CTO and the seats it delegates to (docs/03-TEAM.md, docs/04-ROUTING.md)")
     cto = dict(cfg.get("cto") or {})
-    cto["model"] = ask("cto_model", "CTO model (Claude Code; 'default' = the CLI's own)", cto.get("model") or "default")
-    effort = ask("cto_effort", "CTO effort ('default' = the CLI's own; higher thinks longer and costs more)",
-                 cto.get("effort") if cto.get("effort") in EFFORTS else "default", EFFORTS)
+    cto["model"] = ask("cto_model", "CTO model (Codex CLI)", cto.get("model") or codex_runtime.ROUTES["cto"][0])
+    effort = ask("cto_effort", "CTO reasoning effort (default = xhigh)",
+                 cto.get("effort") if cto.get("effort") in EFFORTS else "xhigh", EFFORTS)
     if effort != "default":
         cto["effort"] = effort
     else:
@@ -318,7 +315,7 @@ def unknown_seats(answers: dict) -> str:
 
 
 def unsupported_harness(answers: dict) -> str:
-    """Why the answers ask for a harness that is not Claude Code, or "" when they do not.
+    """Why the answers ask for a harness other than Codex CLI, or "" when they do not.
 
     Until 2026-11 setup offered opencode and codex here and wrote the choice into the seat's spec,
     months after cards stopped running anywhere but Claude Code: the seat then ran nothing. Refused
@@ -333,19 +330,17 @@ def unsupported_harness(answers: dict) -> str:
 
 
 def verify_models(models: list) -> list:
-    """The models that do not answer. A model id that never existed sat in the routing doc for weeks."""
-    claude = os.environ.get("AI_TEAMMATES_CLAUDE_BIN", "claude")
+    """The models missing from the selected CLI catalog. A model id that never existed sat in the routing doc for weeks."""
+    try:
+        available = codex_runtime.catalog()
+    except ValueError as e:
+        print(e)
+        return models
     bad = []
-    for m in models:
-        try:
-            r = subprocess.run([claude, "--model", m, "-p", "Reply with the word ok", "--max-turns", "1"],
-                               capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
-            okay = r.returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            okay = False
-        print(f"  {'ok  ' if okay else 'FAIL'}  {m}")
-        if not okay:
-            bad.append(m)
+    for model in models:
+        print(f"  {'ok' if model in available else 'FAIL'}  {model}")
+        if model not in available:
+            bad.append(model)
     return bad
 
 
@@ -376,7 +371,7 @@ def step_scope(ask, cfg: dict) -> None:
 
 # --- workspace -----------------------------------------------------------------------------
 
-INSTALL_PATHS = (".ai-teammates", ".claude/settings.json")
+INSTALL_PATHS = (".ai-teammates", ".codex/hooks.json")
 
 
 def worktrees() -> list:
@@ -531,13 +526,13 @@ def main(argv) -> int:
     step_spend(ask, cfg)
 
     if "--verify-models" in argv or (ask.interactive and models
-                                     and yes(ask("verify_models", "Check each model answers now (one short call each)?",
+                                     and yes(ask("verify_models", "Check each model against the Codex CLI catalog?",
                                                  "no", ("yes", "no")))):
         print("\n── models ──")
         bad = verify_models(models)
         if bad:
             print(f"\n  {len(bad)} model(s) did not answer: {', '.join(bad)}. config.json was not changed; "
-                  "fix the id (claude --model <id> -p hi) and run setup again.")
+                  "check the ID with codex debug models and run setup again.")
             return 1
 
     if json.dumps(cfg, sort_keys=True) != before:
