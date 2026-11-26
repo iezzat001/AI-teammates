@@ -8,6 +8,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Preview the proposed Codex model and reasoning level for the CTO, a card tier or a stored card
+  with `seat.py route`. Use `--verify` to check the selected CLI's model catalog (#33).
+- The pre-tool guard checks each path in native Codex patches and protects Codex hook configuration.
+
 - **One command from a clone to a working project (#18).** `install.sh <project>` installs into a
   project from anywhere (`ai-teammates install <project>` too), and a first install from a terminal
   goes straight on into `cto setup`. `install.sh <project> --yes` or `--answers file.json` runs the

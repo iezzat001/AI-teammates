@@ -54,6 +54,7 @@ def log(kind, detail):
 
 
 SESSION_ID = ""      # set from the hook payload in main(); loopguard keys its counters on it
+CODEX = False
 CWD = os.getcwd()    # where the tool runs: the payload's cwd when it says
 
 
@@ -84,6 +85,9 @@ def ask(rule, reason):
     """Hand the decision to the human. Interactive: a permission prompt with the
     reason. Headless there is no one to answer, so it becomes a denial that
     loopguard turns into a BLOCKED report."""
+    # Codex currently fails open on PreToolUse "ask". Deny until the owner acts.
+    if CODEX:
+        block(rule, reason, "Ask the owner to perform or approve this change.")
     log("ask", {"rule": rule, "message": reason[:200]})
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
                                               "permissionDecision": "ask",
@@ -505,8 +509,8 @@ def _checkout(d):
 # product paths, the seats' denied commands and the CTO's own pre-approved commands, and a single edit
 # to "cards" let a card of any size through.
 GUARDRAIL_FILES = (".ai-teammates/hooks/", ".claude/settings.json", ".claude/settings.local.json",
-                   ".ai-teammates/config.json")
-_GUARDRAIL_TEXT = re.compile(r"\.ai-teammates/(?:hooks/|config\.json)|\.claude/settings(?:\.local)?\.json")
+                   ".ai-teammates/config.json", ".codex/config.toml", ".codex/hooks.json")
+_GUARDRAIL_TEXT = re.compile(r"\.ai-teammates/(?:hooks/|config\.json)|\.claude/settings(?:\.local)?\.json|\.codex/(?:config\.toml|hooks\.json)")
 
 
 def _is_guardrail(rel):
@@ -1350,25 +1354,58 @@ HANDLERS = (check_blocked_gate, check_card_scope, check_card_shell, check_seat_d
             check_framework_source, check_guardrail_files, check_frontend_edit, check_delegation, check_git)
 
 
+def codex_patch_paths(command):
+    """Return every touched path, including both ends of a move, or refuse the patch."""
+    lines = command.splitlines() if isinstance(command, str) else []
+    if len(lines) < 3 or lines[0] != "*** Begin Patch" or lines[-1] != "*** End Patch":
+        return []
+    paths = []
+    for line in lines[1:-1]:
+        if line != line.lstrip() and line.lstrip().startswith("*** "):
+            return []
+        if line == "*** End of File" or line.startswith((" ", "+", "-", "@@")) or not line:
+            continue
+        match = re.fullmatch(r"\*\*\* (?:Add File|Update File|Delete File|Move to): (.+)", line)
+        if not match or match[1] != match[1].strip():
+            return []
+        paths.append(str(Path(CWD, match[1]).resolve()))
+    return paths
+
+
 def main():
-    global SESSION_ID, CWD
+    global SESSION_ID, CWD, CODEX
     try:
         payload = json.load(sys.stdin)
     except Exception:
         sys.exit(0)  # never break the session on a malformed payload
+    if not isinstance(payload, dict):
+        return
     SESSION_ID = payload.get("session_id") or ""
     CWD = payload.get("cwd") or CWD
 
     tool = payload.get("tool_name") or payload.get("tool") or ""
     ti = payload.get("tool_input") or {}
 
+    CODEX = tool == "apply_patch" or os.environ.get("AI_TEAMMATES_RUNTIME") == "codex"
     override = os.environ.get("AI_TEAMMATES_OVERRIDE")
     if override:
         log("override", {"tool": tool, "reason": override[:200]})
         sys.exit(0)
 
-    for handler in HANDLERS:
-        handler(tool, ti)
+    if tool == "apply_patch":
+        try:
+            paths = codex_patch_paths(ti.get("command") if isinstance(ti, dict) else None)
+        except (OSError, ValueError, RuntimeError, TypeError):
+            paths = []
+        if not paths:
+            block("patch-scope", "Cannot determine every path in the Codex patch.",
+                  "Use a native patch with explicit file paths.")
+        for path in paths:
+            for handler in HANDLERS:
+                handler("Edit", {"file_path": path})
+    else:
+        for handler in HANDLERS:
+            handler(tool, ti)
 
     sys.exit(0)
 

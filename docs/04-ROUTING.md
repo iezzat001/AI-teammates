@@ -1,12 +1,51 @@
 # Routing: which seat gets the card, on which model
 
-One harness, one choice per card.
+## Codex CLI migration
 
-**Harness: Claude Code, for the CTO and every seat.** Hooks only fire in Claude
-Code, and the hooks are where this system's guarantees live: edits outside a card's
-scope are denied while the seat works, a human-only blocker ends the run instead of
-looping, and the run has a wall-time and tool-call budget. A harness without hooks
-can only be checked after the fact. (OpenCode and Codex were tried; see History.)
+The proposed CTO runs on GPT-6.2-Astra with extra-high reasoning (`xhigh`). Choose the seat
+by ownership, then choose the worker model by the difficulty of the card. A backend seat can
+use Luna for a rename and Sol for a migration.
+
+| Role or card tier | Model | Reasoning | Example |
+|---|---|---|---|
+| CTO | `gpt-6.2-astra` | `xhigh` | Decompose a change across services, resolve competing requirements, sign off on the result |
+| `mechanical` | `gpt-6-luna` | `low` | Apply a known transformation with an exact, executable acceptance check |
+| `standard` | `gpt-6.2-sol` | `medium` | Implement a specified endpoint or component, add tests, review an ordinary change |
+| `hard` | `gpt-6.2-sol` | `high` | Reason about retries, concurrency, migrations, or access-control correctness |
+
+Keep Astra off the normal worker routes. Move a card from Luna to Sol when its check exposes
+a case the mechanical edit missed. Give the CTO the evidence if a hard card still needs an
+architectural decision. A missing credential or ambiguous requirement should go to the owner.
+
+Preview the route for a tier or a stored card. The latter respects an explicit `card.model`.
+`--verify` checks the model and effort together against the selected CLI's catalog.
+
+```sh
+python3 .ai-teammates/hooks/seat.py route cto --verify
+python3 .ai-teammates/hooks/seat.py route --card DOC-2 --verify
+```
+
+The command uses `codex` from PATH. Set `AI_TEAMMATES_CODEX_BIN` to select a different
+executable. Two CLI installations on one machine can advertise different models.
+
+**Measured 2026-11-26.** A read-only CLI trial used invented inputs, one invocation per model
+and fixture, with four expected outputs per fixture. The rename fixture distinguished fields
+from local variables and serialized keys. The retry fixture traced failed writes and duplicate
+jobs. Luna low matched 3/4 on each, Luna medium matched 3/4 and 2/4, and Sol medium matched
+4/4 on both. On a separate lease and queue fixture, Sol high and Astra xhigh both matched all
+four traces against a reference implementation. Use the project's own card outcomes, including
+retries, to refine these starting tiers.
+
+**Cutover status.** The launcher and supervised card runs still use Claude Code. Codex reports
+tokens, while the current runner enforces per-run and daily dollar limits. The choice of
+budget enforcement determines how the new runner can start unattended jobs.
+
+## Current Claude Code runtime
+
+**SUPERSEDED 2026-11-26.** The earlier claim that only Claude Code supports pre-tool hooks
+is obsolete. Codex CLI also supports them. Its file-edit payload and approval response
+contracts differ. Codex patches need every affected path checked, including move destinations.
+An action requiring owner approval must receive a supported blocking decision. [Codex hooks](https://learn.chatgpt.com/docs/hooks)
 
 **The choice that is left is the model.** The CTO's is fixed in config; a seat's is chosen per
 card by `tier`. Decided 2026-10-04 with the owner: the CTO runs on the strongest model at

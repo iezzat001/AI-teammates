@@ -432,6 +432,92 @@ def check_delegation_policy():
     {"ok": ok, "note": note}[kind](text)
 
 
+def check_codex_routes():
+    """Ask the installed seat CLI for the exact model and effort it would launch."""
+    import os
+    import shutil
+    import tempfile
+    here = Path(__file__).resolve().parent
+    with tempfile.TemporaryDirectory() as td:
+        project = Path(td)
+        subprocess.run([GIT, "init", "-q", td], check=True)
+        hooks = project / ".ai-teammates" / "hooks"
+        shutil.copytree(here, hooks, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+        catalog = project / "codex"
+        catalog.write_text("#!/bin/sh\n[ \"$1 $2\" = 'debug models' ] || exit 9\n"
+                           """echo '{"models":[{"slug":"gpt-6.2-sol","supported_reasoning_levels":[{"effort":"medium"}]}]}'\n""")
+        catalog.chmod(0o755)
+        def route(*args):
+            return subprocess.run([sys.executable, str(hooks / "seat.py"), "route", *args],
+                                  cwd=project, capture_output=True, text=True,
+                                  env={**os.environ, "AI_TEAMMATES_CODEX_BIN": str(catalog)})
+        for tier, model, effort in (("cto", "gpt-6.2-astra", "xhigh"),
+                                    ("mechanical", "gpt-6-luna", "low"),
+                                    ("standard", "gpt-6.2-sol", "medium"),
+                                    ("hard", "gpt-6.2-sol", "high")):
+            r = route(tier)
+            (ok if r.returncode == 0 and r.stdout.strip() == f"{model} {effort}" else bad)(
+                f"default Codex route for {tier}: {model} {effort}")
+        (ok if route("standard", "--verify").returncode == 0 and
+         route("hard", "--verify").returncode != 0 and route("cto", "--verify").returncode != 0 else bad)(
+            "Codex verification checks both the model and reasoning against the selected CLI's catalog")
+        (ok if route("unknown").returncode != 0 else bad)("an unknown tier refuses")
+        cards = project / ".ai-teammates" / "cards"
+        cards.mkdir()
+        path = cards / "DOC-1.json"
+        for card, expected in (({"tier": "mechanical"}, "gpt-6-luna low"),
+                               ({"seat": "backend"}, "gpt-6.2-sol medium"),
+                               ({"tier": "hard", "model": "gpt-6.2-astra"}, "gpt-6.2-astra high")):
+            path.write_text(json.dumps({"id": "DOC-1", **card}))
+            r = route("--card", "DOC-1")
+            (ok if r.returncode == 0 and r.stdout.strip() == expected else bad)(
+                f"Codex route from stored card: {expected}")
+        path.write_text(json.dumps({"id": "DOC-1", "model": ["gpt-6-luna"]}))
+        r = route("--card", "DOC-1")
+        (ok if r.returncode != 0 and "model" in r.stderr else bad)("malformed explicit model refuses")
+        path.write_text(json.dumps({"id": "DOC-1", "model": "claude-sonnet-5-5"}))
+        r = route("--card", "DOC-1", "--verify")
+        (ok if r.returncode != 0 and "claude-sonnet-5-5" in r.stderr else bad)(
+            "verification explains an existing card's incompatible explicit model")
+
+
+def check_codex_patches():
+    """Run the guard on native Codex hook payloads, including a multi-file edit."""
+    import os
+    import tempfile
+    guard = Path(__file__).resolve().with_name("guard.py")
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        subprocess.run([GIT, "init", "-q", td], check=True)
+        (root / "src").mkdir()
+        (root / ".ai-teammates").mkdir()
+        (root / ".ai-teammates/config.json").write_text('{"guarded_paths": ["app/"]}')
+        card = root / "card.json"
+        card.write_text(json.dumps({"scope": {"edit": ["src/one", "src/two"]}}))
+        def run(body, seat=True):
+            env = {**os.environ, "AI_TEAMMATES_CARD": str(card), "AI_TEAMMATES_SEAT": "Worker"}
+            for key in ("AI_TEAMMATES_OVERRIDE", "CLAUDE_AGENT_NAME"):
+                env.pop(key, None)
+            if not seat:
+                env.pop("AI_TEAMMATES_CARD")
+                env.pop("AI_TEAMMATES_SEAT")
+            event = {"hook_event_name": "PreToolUse", "tool_name": "apply_patch",
+                     "cwd": str(root / "src"), "tool_input": {"command": body}}
+            return subprocess.run([sys.executable, str(guard)], input=json.dumps(event), cwd=root,
+                                  env=env, text=True, capture_output=True)
+        for title, patch, seat, expected in (
+            ("two scoped files", "*** Add File: one\n+1\n*** Add File: two\n+2", True, 0),
+            ("second file outside scope", "*** Add File: one\n+1\n*** Delete File: three", True, 2),
+            ("rename destination outside scope", "*** Update File: one\n*** Move to: three\n@@\n-a\n+b", True, 2),
+            ("unrecognised patch", "unrecognised edit", True, 2),
+            ("ambiguous indented file header", "*** Add File: one\n+1\n *** Add File: two\n+2", True, 2),
+            ("changing Codex hook registration requires the owner",
+             "*** Add File: ../.codex/hooks.json\n+{}", False, 2),
+        ):
+            result = run("*** Begin Patch\n" + patch + "\n*** End Patch", seat)
+            (ok if result.returncode == expected else bad)(f"Codex patch: {title}")
+
+
 def check_harness():
     """Claude Code is the only harness: its hooks are what stop a seat during a run.
 
@@ -3166,7 +3252,7 @@ def main():
     project = ((check_static, (s,)), (check_tracked, ()), (check_hook, ()), (check_delegation_policy, ()),
                (check_models, (s,)), (check_parity, ()))
     # The framework's code, executed in throwaway repositories: the self-test.
-    selftest = ((check_harness, ()), (check_parity_rules, ()), (check_guard, ()), (check_loopguard, ()),
+    selftest = ((check_codex_routes, ()), (check_codex_patches, ()), (check_harness, ()), (check_parity_rules, ()), (check_guard, ()), (check_loopguard, ()),
                 (check_cards, ()), (check_delegation_report, ()), (check_setup, ()), (check_seat_limits, ()),
                 (check_memory, ()), (check_memslice, ()), (check_memlife, ()), (check_fact_review, ()),
                 (check_launcher, ()), (check_selftest_stamp, ()), (check_any_machine, ()), (check_board_digest, ()), (check_dashboard, ()),

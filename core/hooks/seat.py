@@ -2,6 +2,7 @@
 """Launch a teammate seat, and record what it cost and whether it behaved.
 
     python3 .ai-teammates/hooks/seat.py list
+    python3 .ai-teammates/hooks/seat.py route <tier> | --card <ID> [--verify]
     python3 .ai-teammates/hooks/seat.py run --card DOC-2          # the unit of delegation (cardrun.py)
     python3 .ai-teammates/hooks/seat.py land DOC-2                # merge it, its checks re-run on the merged result
     python3 .ai-teammates/hooks/seat.py verify ONB                # a parent card: the whole outcome, once all landed
@@ -362,6 +363,12 @@ def main():
     argv = sys.argv[1:]
     if not argv or argv[0] == "list":
         cmd_list(agents)
+    elif argv[0] == "route":
+        import codex_runtime
+        try:
+            codex_runtime.show_route(argv[1:])
+        except (ValueError, OSError) as e:
+            sys.exit(str(e))
     elif argv[0] == "run" and "--card" in argv:
         # python3 seat.py run [<seat>] --card <ID>: the unit of delegation is a card
         import cardrun
