@@ -109,9 +109,14 @@ A card may grant its seat extra **commands** (`Bash(npm run typecheck)`,
 reading, or npm installing: `card.py check` refuses the card. While a card runs,
 `guard.py` refuses any shell command that would change files (a redirect, `cp`,
 `sed -i`, `git checkout`, `tee`, or a shell or interpreter it cannot read into); files
-change only through Edit/Write on the card's own files, where the scope check sees
-them, and `git rm` of a file the card names (deleting is a change too, and no edit tool
-can do it). Every seat is refused `config.json` `required_denies` (`git push`, `rm -rf`,
+change through scoped native patches, including file deletions. A writer can also use
+`git rm` on a file named by its card. The seat stages into a temporary Git index and
+object store. The host independently checks the worktree diff and commits using its own index.
+
+**SUPERSEDED 2026-11-27.** Earlier guidance described deletion as a Git-only operation.
+For source inspection Codex seats can use numeric `sed -n '12,24p' file` ranges and
+quoted `rg` or `grep` searches with context. Pipes and `&&` are checked command by command
+when they combine supported source reads. Every seat is refused `config.json` `required_denies` (`git push`, `rm -rf`,
 `ssh`, and per project e.g. `supabase*`) however it is run (`git -C x push`, `npx`,
 `bash -c '...'`, `xargs`, `find -exec`); an argument that only names one is not one.
 
