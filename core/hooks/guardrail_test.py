@@ -1158,15 +1158,27 @@ elif mode == "edit_outside":
 elif mode == "write":
     for p, t in json.loads(os.environ["STUB_WRITES"]).items():
         open(p, "w").write(t); tool(p)
-elif mode in ("rm_edit", "rm_edit_blocked"):
+elif mode in ("rm_edit", "rm_edit_blocked", "locked_index"):
     # what a deletion card's seat does: git rm one file the card names, edit another
     import subprocess
+    if mode == "locked_index":
+        # Hold the real linked-worktree index for the entire seat turn, as the native sandbox does.
+        host_env = {k: v for k, v in os.environ.items() if k not in ("GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
+                                                                     "GIT_ALTERNATE_OBJECT_DIRECTORIES")}
+        index = subprocess.check_output(["git", "rev-parse", "--git-path", "index"], text=True, env=host_env).strip()
+        lock = Path(index + ".lock")
+        lock.touch(exist_ok=False)
     subprocess.run(["git", "rm", "-q", "src/b.txt"], capture_output=True)
     open("src/a.txt", "a").write("fixed\n"); tool("src/a.txt")
     if os.environ.get("STUB_SELF_CHECK"):                # ...and its sanctioned self-check
         q = subprocess.run([sys.executable, os.path.join(os.environ["STUB_HOOKS"], "card.py"), "accept"],
                            capture_output=True, text=True)
         open(os.environ["STUB_SELF_CHECK"], "w").write("%d\n%s" % (q.returncode, q.stdout))
+    if mode == "locked_index":
+        clean = subprocess.run(["git", "diff", "--cached", "--quiet"], env=host_env).returncode == 0
+        with open(os.environ["STUB_SELF_CHECK"], "a") as check:
+            check.write("\nhost index clean: " + str(clean))
+        lock.unlink()
     if mode == "rm_edit_blocked":
         text = "BLOCKED: auth | log in to the staging service"
 elif mode == "blocked":
@@ -1465,6 +1477,14 @@ def check_cards():
         sc = seen.read_text() if seen.exists() else "no self-check ran"
         expect("the seat's self-check passes on a card that deleted one file and edited another: the edit is "
                f"staged for its tests (got: {' / '.join(sc.split())[:90]})", sc.startswith("0\n") and "3/3" in sc)
+        locked_check = Path(td) / "locked-check.txt"
+        mk("T-LOCK", acceptance=[gone, said, {"run": "git diff --quiet -- src/a.txt",
+                                              "why": "self-check sees the edit staged"}], **both)
+        _, locked_run = go("T-LOCK", "locked_index", STUB_HOOKS=str(hooks), STUB_SELF_CHECK=str(locked_check))
+        result = locked_check.read_text() if locked_check.exists() else ""
+        expect("a seat can git rm and self-check with the host index locked, then the runner commits both paths",
+               result.startswith("0\n") and "3/3" in result and "host index clean: True" in result and
+               locked_run and locked_run["status"] == "done" and locked_run["files"] == ["src/a.txt", "src/b.txt"])
         mk("T-15", acceptance=[gone, said], **both)
         p, r = go("T-15", "rm_edit")
         wt15 = Path(td) / "proj-card-t-15"
@@ -2082,6 +2102,12 @@ def check_seat_limits():
                                                           "git rm a.txt > log", "git rm a.txt b.txt", "rm a.txt",
                                                           "git -C .. rm a.txt", "git --work-tree=/tmp rm a.txt")))
         codex_env = {**card_env, "AI_TEAMMATES_RUNTIME": "codex", "AI_TEAMMATES_SEAT": "Tester"}
+        for cmd in ("rg -n -C 2 'old|new' --glob '*.py' .", "grep -nE 'old|new' a.txt",
+                    "sed -n '2,9p' a.txt", "rg -n 'old|new' . | head -n 5",
+                    "sed -n '1,3p' a.txt && sed -n '7,9p' b.txt"):
+            expect("Codex source inspection permits " + cmd, guard(cmd, **codex_env)[0] == 0)
+        for cmd in ("sed -i 's/old/new/' a.txt", "rg old . | tee b.txt", "sed -n '1w b.txt' a.txt"):
+            expect("source inspection still denies a write: " + cmd, guard(cmd, **codex_env)[0] == 2)
         expect("Codex writer can delete its card file and a read-only seat cannot",
                guard("git rm a.txt", **codex_env)[0] == 0 and
                guard("git rm a.txt", **{**codex_env, "AI_TEAMMATES_READ_ONLY":"1"})[0] == 2)

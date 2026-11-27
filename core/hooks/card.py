@@ -477,6 +477,9 @@ def render(card: dict) -> str:
     ]
     if reads:
         out.append("YOU MAY ALSO READ: " + ", ".join(reads))
+    out.append("SOURCE READS: cat, head, tail, rg/grep (quoted patterns and context), or sed -n '12,24p' file. "
+               "Source reads may be joined with a pipe or &&. Use native apply_patch for scoped edits and deletions. "
+               "The host checks and commits the worktree after you finish.")
     if card.get("steps"):
         out += ["", "STEPS:"] + [f"  {i}. {s}" for i, s in enumerate(card["steps"], 1)]
     mem = (card.get("memory") or {}).get("text")
@@ -502,8 +505,8 @@ def render(card: dict) -> str:
     out += ["", "RULES",
             f"  - Budget: about {b['minutes']} minutes, {b['tool_calls']} tool calls and {b['tokens']} tokens. "
             "A small task should not need it; the run is stopped when any of them runs out.",
-            "  - Edits outside the files above are denied, and so is any command not listed under COMMANDS YOU MAY RUN "
-            "(none listed = none allowed). A refusal is not an error to fix: do not retry or rephrase it.",
+            "  - Stay in the edit scope. Use the source reads above or the listed card commands "
+            "when using the shell. A refusal is not an error to fix: do not retry or rephrase it.",
             "  - Do not commit and do not push. Leave your changes in the working tree; the runner commits.",
             "  - If you hit something you cannot do within this card (an approval, a login, billing, "
             "a missing tool or credential, a file you need that is not listed), STOP. Do not work around it, "

@@ -31,6 +31,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -229,6 +230,34 @@ def run(agents: dict, cid: str, seat_name: str = "") -> int:
         return EXIT["blocked"]
 
 
+def run_seat(wt, env, model, effort, prompt, read_only, budget):
+    idle = cardmod.limits()["idle_minutes"] * 60
+    if read_only:
+        return codex_session.run(wt, env, model, effort, prompt, True, budget, idle_seconds=idle)
+
+    # FOUND 2026-11-27: a linked worktree's real index and object store are outside
+    # the Codex sandbox. Keep the seat's staging private until the host verifies the diff.
+    with tempfile.TemporaryDirectory(prefix="ai-teammates-git-") as tmp:
+        private = Path(tmp)
+        objects = private / "objects"
+        objects.mkdir()
+        backing = git("rev-parse", "--git-path", "objects", cwd=wt)
+        if backing.returncode:
+            return {"status": "failed", "reason": backing.stderr.strip(), "started_turn": False, "text": "", "tools": 0}
+        source = (wt / backing.stdout.strip()).resolve()
+        # Git accepts C-quoted entries (including a path containing the list separator).
+        alternates = json.dumps(str(source), ensure_ascii=False)
+        if env.get("GIT_ALTERNATE_OBJECT_DIRECTORIES"):
+            alternates += os.pathsep + env["GIT_ALTERNATE_OBJECT_DIRECTORIES"]
+        seat_env = {**env, "GIT_INDEX_FILE": str(private / "index"),
+                    "GIT_OBJECT_DIRECTORY": str(objects), "GIT_ALTERNATE_OBJECT_DIRECTORIES": alternates}
+        prepared = subprocess.run([GIT, "read-tree", "HEAD"], cwd=wt, env=seat_env, capture_output=True, text=True)
+        if prepared.returncode:
+            return {"status": "failed", "reason": "Could not initialize seat index: " + prepared.stderr.strip(),
+                    "started_turn": False, "text": "", "tools": 0}
+        return codex_session.run(wt, seat_env, model, effort, prompt, False, budget, idle_seconds=idle)
+
+
 def _run_card(card, spec, cid, name, model, effort, b, read_only, usage):
     wt = make_worktree(spec, cid, card)
     br = card_branch(spec, cid)
@@ -253,8 +282,7 @@ def _run_card(card, spec, cid, name, model, effort, b, read_only, usage):
                    AI_TEAMMATES_CARD=str(cardmod.path(cid)), AI_TEAMMATES_HEADLESS="1")
         env["PATH"] = _config.tool_path(env.get("PATH", ""))    # the user's own tools (issue #19)
         usage["started_turn"] = True
-        usage.update(codex_session.run(wt, env, model, effort, cardmod.render(card), read_only, b,
-                                       idle_seconds=cardmod.limits()["idle_minutes"] * 60))
+        usage.update(run_seat(wt, env, model, effort, cardmod.render(card), read_only, b))
         rc = 0 if usage["status"] == "done" else 1
         text, tools = usage["text"], usage["tools"]
         lines.append(text)

@@ -1354,9 +1354,87 @@ HANDLERS = (check_blocked_gate, check_card_scope, check_card_shell, check_seat_d
             check_framework_source, check_guardrail_files, check_frontend_edit, check_delegation, check_git)
 
 
+# Parse only the literal shell words and separators needed for source inspection.
+# Quoted regex alternation is data. An unquoted pipe must connect two permitted reads.
+_READ_TOKEN = re.compile(r"""[ \t]+|&&|\||'[^'\r\n]*'|"[^"\x60$\\!\r\n]*"|[A-Za-z0-9_.,/:=@%+^-]+""")
+
+
+def source_read(command):
+    if not isinstance(command, str):
+        return False
+    args, word, pos = [], None, 0
+    while pos < len(command):
+        match = _READ_TOKEN.match(command, pos)
+        if not match:
+            return False
+        token, pos = match[0], match.end()
+        if token not in ("|", "&&") and not token.isspace():
+            literal = token[1:-1] if token[0] in ("'", '"') else token
+            word = (word or "") + literal
+            continue
+        if word is not None:
+            args.append(word)
+            word = None
+        if token in ("|", "&&"):
+            if not source_read_args(args):
+                return False
+            args = []
+    if word is not None:
+        args.append(word)
+    return source_read_args(args)
+
+
+def source_read_args(args):
+    if not args:
+        return False
+    name, rest = args[0], args[1:]
+    if name == "sed":
+        return (len(rest) >= 2 and rest[0] == "-n" and
+                re.fullmatch(r"[1-9]\d*(?:,(?:[1-9]\d*|\$))?p", rest[1]) is not None and
+                all(not path.startswith("-") for path in rest[2:]))
+    if name in ("head", "tail"):
+        if rest[:1] == ["-n"] and len(rest) >= 2 and re.fullmatch(r"[+]?\d+", rest[1]):
+            rest = rest[2:]
+        elif rest and re.fullmatch(r"-\d+", rest[0]):
+            rest = rest[1:]
+        return all(not path.startswith("-") for path in rest)
+    if name == "nl" and rest[:1] == ["-ba"]:
+        rest = rest[1:]
+    if name == "wc" and rest[:1] == ["-l"]:
+        rest = rest[1:]
+    if name in ("cat", "nl", "wc", "pwd", "ls"):
+        return all(not path.startswith("-") for path in rest)
+    if name not in ("rg", "grep"):
+        return False
+    short = r"-[niFcwlHoSv]+" if name == "rg" else r"-[niFcwlHoErv]+"
+    long_flags = {"--line-number", "--ignore-case", "--fixed-strings", "--count"}
+    if name == "rg":
+        long_flags.update(("--files", "--hidden", "--no-heading", "--with-filename", "--files-with-matches"))
+    i = 0
+    while i < len(rest):
+        arg = rest[i]
+        i += 1
+        if arg == "--":
+            return True
+        if arg in ("-A", "-B", "-C", "--after-context", "--before-context", "--context"):
+            if i == len(rest) or not rest[i].isdigit():
+                return False
+            i += 1
+        elif arg in ("-e", "--regexp") or (name == "rg" and arg in ("-g", "--glob")):
+            if i == len(rest):
+                return False
+            i += 1
+        elif (arg.startswith("-") and arg not in long_flags and not re.fullmatch(short, arg)
+              and not re.fullmatch(r"-[ABC][0-9]+", arg)):
+            return False
+    return True
+
+
 def codex_cto_command(ti):
     """Headless commands still require a built-in or owner-configured prefix."""
     command = ti.get("command", "") if isinstance(ti, dict) else ""
+    if source_read(command):
+        return
     if isinstance(command, str) and not re.search(r"[;&|$`<>\\\n\r()]", command):
         try:
             words = shlex.split(command)
@@ -1387,6 +1465,8 @@ def codex_seat_tool(tool, ti):
     if tool != "Bash":
         return
     cmd = ti.get("command", "") if isinstance(ti, dict) else ""
+    if source_read(cmd):
+        return
     # Native Codex shell reads replace Read, Glob and Grep. Treat shell syntax
     # and options that can launch programs or redirect output as separate capabilities.
     if not isinstance(cmd, str) or re.search(r"[;&|`$<>\\\n\r]", cmd):

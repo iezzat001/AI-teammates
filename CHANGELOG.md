@@ -193,6 +193,8 @@ without its fix:
 
 ### Fixed
 
+- Supervised Codex seats can inspect source ranges and quoted search patterns, delete scoped files,
+  and run staged-diff checks using private Git staging in linked worktrees (#37).
 - A card that deleted a file with `git rm` and edited another lost the edit wherever the card's
   files were staged (#31). All of them went to one `git add`; the deleted path matches nothing, so
   git staged nothing and the error was discarded. The seat's self-check (`card.py accept`) failed
